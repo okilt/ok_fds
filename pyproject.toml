@@ -1,0 +1,90 @@
+[build-system]
+# Standard build system definition using setuptools
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "investment_funds_project"
+version = "0.1.0"
+description = "A project to manage investment funds with async processing and caching."
+readme = "README.md" # Optional: if you have a README file
+requires-python = ">=3.8" # pytest-asyncio generally requires Python 3.8+
+license = { text = "MIT" } # Optional: Choose your license
+# Add authors/maintainers if desired
+# authors = [
+#   { name="Your Name", email="your.email@example.com" },
+# ]
+
+# --- Runtime Dependencies ---
+# List packages required for the project to run.
+# Add more as you implement features (e.g., aiohttp, aioredis, pydantic, pandas).
+dependencies = [
+    "pandas>=1.3", # Used in core Fund definitions and likely elsewhere
+    # Add other runtime dependencies here, e.g.:
+    # "pydantic>=1.9",
+    # "aiohttp>=3.8",
+    # "aioredis>=2.0",
+    # "turbodbc>=4.0", # Or other DB drivers
+]
+
+[project.optional-dependencies]
+# --- Test Dependencies ---
+# Packages needed only for running tests.
+test = [
+    "pytest>=7.0",          # The testing framework
+    "pytest-asyncio>=0.18", # Plugin for asyncio support in pytest
+    # Add other testing tools if needed:
+    # "pytest-mock",        # For mocking objects
+    # "pytest-cov",         # For test coverage reporting
+]
+
+# --- Development Dependencies ---
+# Packages useful for development (includes test dependencies).
+dev = [
+    "investment_funds_project[test]", # Include everything from the 'test' group
+    # Add linters, formatters, type checkers, etc.
+    # "ruff",
+    # "mypy",
+    # "pre-commit",
+]
+
+# --- Pytest Configuration ---
+[tool.pytest.ini_options]
+# Minimum pytest version required
+minversion = "7.0"
+
+# Default command-line options for pytest
+# -ra: Show extra test summary info for all tests except passes
+# -q:  Run in quiet mode (less verbose output)
+# Add other flags like --cov=your_package_name for coverage later
+addopts = "-ra -q"
+
+# Directories where pytest should look for tests
+testpaths = [
+    "tests",
+]
+
+# --- pytest-asyncio Configuration ---
+# Mode for handling asyncio tests.
+# 'auto' automatically detects async tests (marked or conventional naming)
+# 'strict' requires explicit @pytest.mark.asyncio marker
+asyncio_mode = "auto"
+
+
+# --- Setuptools Configuration ---
+[tool.setuptools.packages.find]
+# Automatically find packages in the current directory.
+# Adjust 'where' if your source code is in a subdirectory like 'src'.
+where = ["."]
+# Exclude tests directory from the built package distribution
+exclude = ["tests*"]
+
+# Add other tool configurations below if needed (e.g., ruff, mypy, black)
+# [tool.ruff]
+# line-length = 88
+# select = ["E", "F", "W", "I"] # Example linter rules
+
+# [tool.mypy]
+# python_version = "3.10"
+# warn_return_any = true
+# warn_unused_configs = true
