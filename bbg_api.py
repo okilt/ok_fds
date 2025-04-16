@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import blpapi
 import time
 import threading
@@ -8,10 +9,10 @@ import os
 from collections import defaultdict
 from datetime import datetime
 import json
-import asyncio # asyncio連携のため
+import asyncio # For asyncio integration
 
-# --- 定数定義 ---
-# blpapi.Name オブジェクト (事前に生成しておくと効率が良い)
+# --- Constants Definition ---
+# blpapi.Name objects (pre-generating them is efficient)
 SESSION_STARTED         = blpapi.Name("SessionStarted")
 SESSION_STARTUP_FAILURE = blpapi.Name("SessionStartupFailure")
 SESSION_TERMINATED      = blpapi.Name("SessionTerminated")
@@ -22,22 +23,22 @@ SLOW_CONSUMER_WARNING_CLEARED = blpapi.Name("SlowConsumerWarningCleared")
 DATA_LOSS               = blpapi.Name("DataLoss")
 REQUEST_FAILURE         = blpapi.Name("RequestFailure")
 ADMIN                   = blpapi.Name("Admin")
-TIMEOUT                 = blpapi.Name("Timeout")
+TIMEOUT                 = blpapi.Name("Timeout") # Name constant for timeout category/reason
 
-# Event Types
+# Event Types (from blpapi.Event)
 PARTIAL_RESPONSE        = blpapi.Event.EventType.PARTIAL_RESPONSE
 RESPONSE                = blpapi.Event.EventType.RESPONSE
-TIMEOUT_EVENT           = blpapi.Event.EventType.TIMEOUT # イベントタイプとしてのタイムアウト
+TIMEOUT_EVENT           = blpapi.Event.EventType.TIMEOUT # Event type for timeout from nextEvent
 ADMIN_EVENT             = blpapi.Event.EventType.ADMIN
 SESSION_STATUS          = blpapi.Event.EventType.SESSION_STATUS
 SERVICE_STATUS          = blpapi.Event.EventType.SERVICE_STATUS
-# 他にも多くのイベントタイプが存在
+# Many other event types exist
 
-# Message Types (Adminイベントなどで使用)
+# Message Types (Used in Admin events, etc.)
 PERMISSION_REQUEST      = blpapi.Name("PermissionRequest")
 RESOLUTION_SUCCESS      = blpapi.Name("ResolutionSuccess")
 RESOLUTION_FAILURE      = blpapi.Name("ResolutionFailure")
-# 他多数
+# Many others
 
 # Data Element Names
 SECURITY_DATA           = blpapi.Name("securityData")
@@ -53,12 +54,12 @@ CODE                    = blpapi.Name("code")
 SOURCE                  = blpapi.Name("source")
 SECURITY_ERROR          = blpapi.Name("securityError")
 RESPONSE_ERROR          = blpapi.Name("responseError")
-REASON                  = blpapi.Name("reason") # RequestFailure内
+REASON                  = blpapi.Name("reason") # Within RequestFailure
 
 # Intraday Data Names
 BAR_DATA                = blpapi.Name("barData")
 BAR_TICK_DATA           = blpapi.Name("barTickData")
-TICK_DATA               = blpapi.Name("tickData")
+TICK_DATA               = blpapi.Name("tickData") # For IntradayTickResponse container
 TIME                    = blpapi.Name("time")
 OPEN                    = blpapi.Name("open")
 HIGH                    = blpapi.Name("high")
@@ -66,48 +67,52 @@ LOW                     = blpapi.Name("low")
 CLOSE                   = blpapi.Name("close")
 VOLUME                  = blpapi.Name("volume")
 NUM_EVENTS              = blpapi.Name("numEvents")
-VALUE                   = blpapi.Name("value") # Tickデータ用
-TYPE                    = blpapi.Name("type") # Tickデータ用
+VALUE                   = blpapi.Name("value") # For Tick data price/value
+TYPE                    = blpapi.Name("type") # For Tick data type (TRADE, BID, ASK)
 
-# --- エラーカテゴリ (リトライ判断用) ---
-# これらは例であり、実際のカテゴリ/サブカテゴリに合わせて調整が必要
-RETRYABLE_CATEGORIES = {"TIMEOUT", "NETWORK_ERROR", "SERVER_ERROR"} # 仮のカテゴリ名
-NON_RETRYABLE_CATEGORIES = {"BAD_SECURITY", "BAD_FIELD", "AUTHORIZATION_FAILURE", "INVALID_REQUEST"} # 仮のカテゴリ名
+# --- Error Categories (For retry logic) ---
+# These are examples and need adjustment based on actual category/subcategory strings
+RETRYABLE_CATEGORIES = {"TIMEOUT", "NETWORK_ERROR", "SERVER_ERROR", "CONNECTION_FAILURE"} # Hypothetical category names
+NON_RETRYABLE_CATEGORIES = {"BAD_SECURITY", "BAD_FIELD", "AUTHORIZATION_FAILURE", "INVALID_REQUEST", "ILLEGAL_FIELD"} # Hypothetical category names
 
 
-# --- ロガー設定 ---
+# --- Logger Setup ---
 def setup_logger(name='blpapi_wrapper', level=logging.INFO, log_file=None):
-    """ロガーを設定するヘルパー関数"""
+    """Helper function to set up a logger."""
     logger = logging.getLogger(name)
-    # 既にハンドラが設定されている場合は追加しない (重複ログ防止)
+    # Avoid adding handlers multiple times (prevents duplicate logs)
     if logger.hasHandlers():
         logger.handlers.clear()
 
     logger.setLevel(level)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(threadName)s - %(message)s')
 
-    # コンソールハンドラ
+    # Console handler
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    # ファイルハンドラ (指定された場合)
+    # File handler (if specified)
     if log_file:
-        fh = logging.FileHandler(log_file, encoding='utf-8')
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
+        try:
+            fh = logging.FileHandler(log_file, encoding='utf-8')
+            fh.setFormatter(formatter)
+            logger.addHandler(fh)
+        except Exception as e:
+            print(f"Warning: Could not create log file handler for {log_file}. Error: {e}")
 
-    # blpapiライブラリ自体のログレベルを調整 (冗長な場合)
+
+    # Adjust the log level of the blpapi library itself (if too verbose)
     blpapi_logger = logging.getLogger('blpapi')
-    blpapi_logger.setLevel(logging.WARNING) # 必要に応じて変更
+    blpapi_logger.setLevel(logging.WARNING) # Change as needed
 
     return logger
 
-# --- 設定管理 ---
+# --- Configuration Management ---
 def load_config(config_file='config.ini'):
-    """設定ファイルから接続情報などを読み込む"""
+    """Loads connection info, etc., from a configuration file."""
     config = configparser.ConfigParser()
-    # デフォルト値
+    # Default values
     defaults = {
         'host': 'localhost',
         'port': '8194',
@@ -115,14 +120,14 @@ def load_config(config_file='config.ini'):
         'max_retries': '3',
         'retry_delay': '2',
         'log_level': 'INFO',
-        'log_file': '' # 空ならファイル出力しない
+        'log_file': '' # Empty means no file logging
     }
-    # 環境変数によるオーバーライド (例)
+    # Environment variable overrides (example)
     defaults['host'] = os.environ.get('BLPAPI_HOST', defaults['host'])
     defaults['port'] = os.environ.get('BLPAPI_PORT', defaults['port'])
-    # 他も同様に
+    # Add others similarly
 
-    config['DEFAULT'] = defaults # パーサーにデフォルトを設定
+    config['DEFAULT'] = defaults # Set defaults in the parser
 
     if os.path.exists(config_file):
         try:
@@ -133,27 +138,27 @@ def load_config(config_file='config.ini'):
     else:
         print(f"Warning: Config file {config_file} not found. Using defaults.")
 
-    # 読み込んだ設定を返す (適切な型変換を行う)
+    # Return the loaded settings (with appropriate type conversions)
     settings = {
         'host': config['DEFAULT'].get('host'),
-        'port': config['DEFAULT'].getint('port'), # 整数に変換
+        'port': config['DEFAULT'].getint('port'), # Convert to int
         'timeout': config['DEFAULT'].getint('timeout'),
         'max_retries': config['DEFAULT'].getint('max_retries'),
-        'retry_delay': config['DEFAULT'].getfloat('retry_delay'), # 浮動小数点数に変換
-        'log_level': config['DEFAULT'].get('log_level').upper(), # 大文字に
-        'log_file': config['DEFAULT'].get('log_file') or None # 空文字列ならNone
+        'retry_delay': config['DEFAULT'].getfloat('retry_delay'), # Convert to float
+        'log_level': config['DEFAULT'].get('log_level').upper(), # To uppercase
+        'log_file': config['DEFAULT'].get('log_file') or None # Empty string becomes None
     }
     return settings
 
 
 class BlpApiWrapper:
     """
-    Bloomberg API 非同期ラッパー (プロダクション向け強化版)
-    - 詳細なエラーハンドリングとログ出力
-    - 設定管理
-    - Intradayデータ対応
-    - スレッドセーフティ強化
-    - Excelライクな簡易インターフェース
+    Bloomberg API Asynchronous Wrapper (Enhanced for Production)
+    - Detailed error handling and logging
+    - Configuration management
+    - Intraday data support
+    - Enhanced thread safety
+    - Excel-like simple interface
     """
     def __init__(self, config_file='config.ini'):
         self.settings = load_config(config_file)
@@ -169,31 +174,34 @@ class BlpApiWrapper:
         self.default_retry_delay = self.settings['retry_delay']
 
         self.session = None
-        self.service_states = {} # key: service_name, value: 'opening' or 'opened' or 'failed'
-        self.service_states_lock = threading.Lock() # サービス状態辞書アクセス用ロック
+        self.service_states = {} # key: service_name, value: 'opening', 'opened', or 'failed'
+        self.service_states_lock = threading.Lock() # Lock for accessing service states dictionary
 
         self.response_data = defaultdict(lambda: {"status": "pending", "data": [], "errors": []})
-        self.response_data_lock = threading.Lock() # レスポンスデータ辞書アクセス用ロック
+        self.response_data_lock = threading.Lock() # Lock for accessing response data dictionary
 
         self.event_thread = None
         self.shutdown_event = threading.Event()
         self.next_correlation_id = 0
-        self.cid_lock = threading.Lock() # Correlation ID生成用ロック
+        self.cid_lock = threading.Lock() # Lock for generating Correlation IDs
 
-        self.identity = None # 認証が必要な場合に使用
+        self.identity = None # Used if authorization is required
 
         self.logger.info(f"BlpApiWrapper initialized with settings: {self.settings}")
 
     def _get_next_correlation_id(self):
+        """Generates the next Correlation ID safely."""
         with self.cid_lock:
             self.next_correlation_id += 1
-            # CorrelationIdオブジェクトを作成
+            # Create a CorrelationId object
             return blpapi.CorrelationId(self.next_correlation_id)
 
     def start_session(self, auth_options=None):
         """
-        セッションを開始し、イベント処理スレッドを起動。
-        オプションで認証情報を提供可能。
+        Starts the session and the event processing thread.
+        Optionally provides authorization information.
+        :param auth_options: Dictionary with authorization details (e.g., {'token': '...'} or None).
+        :return: True if successful, False otherwise.
         """
         if self.session:
             self.logger.warning("Session already started.")
@@ -202,10 +210,10 @@ class BlpApiWrapper:
         session_options = blpapi.SessionOptions()
         session_options.setServerHost(self.host)
         session_options.setServerPort(self.port)
-        # session_options.setAutoRestartOnDisconnection(True) # 自動再接続オプション
+        # session_options.setAutoRestartOnDisconnection(True) # Auto-restart option
 
         self.logger.info(f"Attempting to connect to {self.host}:{self.port}")
-        # イベントハンドラを指定してセッション作成
+        # Create session with the event handler
         self.session = blpapi.Session(session_options, self._event_handler)
 
         if not self.session.start():
@@ -215,188 +223,208 @@ class BlpApiWrapper:
 
         self.logger.info("Session started successfully. Waiting for SessionStarted event...")
 
-        # 認証処理 (必要な場合)
+        # Authorization process (if needed)
         if auth_options:
             self.logger.info("Attempting authorization...")
             if not self._authorize(auth_options):
                 self.logger.error("Authorization failed.")
-                self.stop_session()
+                self.stop_session() # Stop the session if auth fails
                 return False
             self.logger.info("Authorization successful.")
         else:
             self.logger.info("No authorization required or identity will be obtained later.")
 
-        # イベント処理スレッドを開始
+        # Start the event processing thread
         self.shutdown_event.clear()
         self.event_thread = threading.Thread(target=self._event_loop, name="BlpapiEventThread")
-        self.event_thread.daemon = True # メインスレッド終了時に自動終了させる場合
+        self.event_thread.daemon = True # Allow program to exit even if this thread is running
         self.event_thread.start()
 
-        # SessionStarted イベントが来るまで少し待つ (堅牢にするならイベントで管理)
-        time.sleep(1)
+        # Give a moment for the SessionStarted event to potentially arrive and be logged
+        # A more robust way would involve waiting for a specific state signaled by the event handler
+        time.sleep(0.5)
 
         self.logger.info("BlpApiWrapper session startup complete.")
         return True
 
     def _authorize(self, auth_options):
-        """認証処理を実行"""
+        """Handles the authorization process."""
         if not self.session:
             self.logger.error("Session not started, cannot authorize.")
             return False
 
-        # 認証用のCorrelation ID
+        # Correlation ID for authorization
         auth_cid = self.session.generateCorrelationId()
 
-        # 認証サービスを開く
-        if not self.session.openService("//blp/apiauth"):
-            self.logger.error("Failed to open //blp/apiauth service.")
+        # Open the authorization service
+        auth_service_name = "//blp/apiauth"
+        if not self.session.openService(auth_service_name):
+            self.logger.error(f"Failed to open {auth_service_name} service.")
             return False
-        auth_service = self.session.getService("//blp/apiauth")
+        auth_service = self.session.getService(auth_service_name)
+        if not auth_service:
+             self.logger.error(f"Could not get {auth_service_name} service object after opening.")
+             return False
 
-        # 認証リクエスト作成
+
+        # Create authorization request
         auth_request = auth_service.createAuthorizationRequest()
-        # auth_options の内容に応じて設定 (例: 'token', 'userAndApp', etc.)
+
+        # Set options based on the provided dictionary
         if 'token' in auth_options:
             auth_request.set("token", auth_options['token'])
+            self.logger.info("Using token-based authorization.")
         elif 'userAndApp' in auth_options:
-             # User/App認証 (SAPI/B-PIPE)
-             auth_info = self.session.AbstractSession.createIdentityUserInfo()
-             auth_info.setUserName(auth_options['userAndApp'].get('user'))
-             auth_info.setApplicationName(auth_options['userAndApp'].get('app'))
-             # 必要に応じて他の情報も設定 (ipAddressなど)
-             # 注意: createIdentityUserInfo の使用方法はバージョン等で異なる可能性あり
-             # authorizationOptions として渡すのが最近の方法かもしれない
-             self.logger.warning("User/App auth method might need review based on blpapi version.")
-             # ここでは簡略化のため Identity を直接作成しない
-             # SessionOptions に認証情報を設定する方が一般的
-             self.logger.error("User/App auth via request is complex, prefer setting in SessionOptions.")
-             return False # SessionOptionsでの設定を推奨
-
+            # User/App authentication (SAPI/B-PIPE) is complex.
+            # It's often better handled via SessionOptions or specific Identity creation methods.
+            # This example assumes token auth is the primary method here.
+            self.logger.error("User/App auth via request is not fully implemented here. Prefer setting in SessionOptions or use specific Identity methods if needed.")
+            # Example structure (might need adjustment):
+            # auth_user = self.session.createIdentityUserInfo()
+            # auth_user.setUserName(...)
+            # auth_user.setApplicationName(...)
+            # self.identity = self.session.createIdentity(auth_user)
+            # Or use session_options.setSessionIdentityOptions(...) before session.start()
+            return False # Indicate failure for this simplified example
         else:
-            self.logger.error(f"Unsupported auth_options: {auth_options}")
+            self.logger.error(f"Unsupported auth_options type: {list(auth_options.keys())}")
             return False
 
-        # 認証リクエスト送信 (IdentityはまだないのでNone)
+        # Send the authorization request (Identity is usually None here)
         self.session.sendAuthorizationRequest(auth_request, None, auth_cid)
+        self.logger.info(f"Sent authorization request with CID: {auth_cid.value()}")
 
-        # 認証結果を待つ (イベントループで処理される)
+        # Wait for the authorization result (processed in the event loop)
         start_time = time.time()
-        timeout = 30 # 認証タイムアウト
+        timeout = 30 # Authorization timeout
+        auth_successful = False
         while time.time() - start_time < timeout:
-            event = self.session.nextEvent(timeout=1000) # 1秒待機
+            # Use nextEvent to process events, including the auth response
+            event = self.session.nextEvent(timeout=1000) # Check every second
+
             if event.eventType() == blpapi.Event.RESPONSE or event.eventType() == blpapi.Event.REQUEST_STATUS:
                 for msg in event:
+                    # Check if this message corresponds to our auth request
                     if msg.correlationIds() and msg.correlationIds()[0] == auth_cid:
                         if msg.messageType() == blpapi.Name("AuthorizationSuccess"):
                             self.logger.info("AuthorizationSuccess received.")
-                            # Identityを取得 (このIdentityを今後のリクエストで使用)
-                            # 注意: Identityの取得方法は認証タイプにより異なる可能性あり
-                            # Desktop APIでは通常Identityは不要 (自動)
-                            # SAPI/B-PIPEではここでIdentityオブジェクトが取得できるはず
-                            # self.identity = self.session.createIdentity() # Desktop APIなどでは不要なことが多い
-                            self.logger.info("Identity established (details may vary by auth type).")
-                            return True
+                            # For SAPI/B-PIPE, you might get an Identity object here.
+                            # For Desktop API, authorization is often implicit, but you might
+                            # still need to create a default Identity if making requests requires one.
+                            # self.identity = self.session.createIdentity() # May be needed depending on setup
+                            self.logger.info("Identity established (specifics depend on auth type and API setup).")
+                            auth_successful = True
+                            break # Exit message loop
                         elif msg.messageType() == blpapi.Name("AuthorizationFailure"):
                             self.logger.error(f"AuthorizationFailure received: {msg}")
-                            # エラー詳細を取得
                             if msg.hasElement(REASON):
                                 reason = msg.getElement(REASON)
-                                self.logger.error(f"Reason: {reason.getElementAsString(DESCRIPTION)}")
-                            return False
+                                self.logger.error(f"Reason: {self._extract_error_info(reason)}")
+                            auth_successful = False
+                            break # Exit message loop
                         else:
-                            self.logger.warning(f"Received unexpected message during auth: {msg.messageType()}")
+                            self.logger.warning(f"Received unexpected message type during auth: {msg.messageType()}")
+                if auth_successful is not None: # If we processed the auth response
+                    break # Exit waiting loop
             elif event.eventType() == blpapi.Event.TIMEOUT:
-                 self.logger.warning("Timeout waiting for authorization response.")
-                 continue # タイムアウトならループ継続
+                 self.logger.debug("Timeout waiting for authorization response event.")
+                 continue # Continue waiting
             else:
-                 # 他の管理イベントなど
-                 self.logger.debug(f"Received other event during auth: {event.eventType()}")
-                 self._process_admin_or_status_event(event) # 他のイベントも処理しておく
+                 # Process other events (like SERVICE_STATUS) that might occur during auth wait
+                 self.logger.debug(f"Received other event type {event.eventType()} during auth wait.")
+                 self._process_admin_or_status_event(event)
 
-        self.logger.error("Authorization timed out.")
-        return False
+
+        if auth_successful:
+            return True
+        elif auth_successful is False: # Explicit failure
+             return False
+        else: # Timeout
+             self.logger.error("Authorization timed out.")
+             return False
 
 
     def stop_session(self):
-        """セッションを停止し、スレッドを終了"""
+        """Stops the session and terminates the event thread."""
         if not self.session:
             self.logger.info("Session already stopped or not started.")
             return
 
         self.logger.info("Stopping session...")
-        self.shutdown_event.set() # イベントループに終了を通知
+        self.shutdown_event.set() # Signal the event loop to terminate
 
-        # セッションを停止 (これによりイベントキューが解放される)
-        # stop() は同期と非同期モードがある。ここでは同期的に停止を試みる。
+        # Stop the session (this releases the event queue)
+        # stop() can be synchronous or asynchronous. Try sync first.
         try:
+            # Using SYNC ensures stop completes before proceeding, but can block
             self.session.stop(blpapi.Session.StopOption.SYNC)
+            self.logger.info("Session stop (SYNC) completed.")
         except Exception as e:
-            self.logger.error(f"Exception during session stop: {e}")
-            # 非同期停止も試みる
+            self.logger.warning(f"Exception during SYNC session stop: {e}. Trying ASYNC.")
+            # If sync fails or hangs, try async (less guarantee of completion order)
             try:
                  self.session.stop(blpapi.Session.StopOption.ASYNC)
+                 self.logger.info("Session stop (ASYNC) initiated.")
             except Exception as e_async:
-                 self.logger.error(f"Exception during async session stop: {e_async}")
+                 self.logger.error(f"Exception during ASYNC session stop: {e_async}")
 
-
-        # イベント処理スレッドの終了を待つ (タイムアウト付き)
+        # Wait for the event processing thread to finish (with timeout)
         if self.event_thread and self.event_thread.is_alive():
             self.logger.info("Waiting for event thread to finish...")
-            self.event_thread.join(timeout=5)
+            self.event_thread.join(timeout=5.0) # Wait up to 5 seconds
             if self.event_thread.is_alive():
-                self.logger.warning("Event thread did not finish cleanly.")
+                self.logger.warning("Event thread did not finish cleanly after stop request.")
 
         self.session = None
-        self.service_states = {} # 状態をクリア
-        self.identity = None
+        self.service_states = {} # Clear states
+        self.identity = None # Clear identity
         self.logger.info("Session stopped.")
 
     def _open_service(self, service_name):
-        """指定されたサービスを開く (同期的に完了を待つ、ロック使用)"""
+        """
+        Opens the specified service synchronously, waiting for completion. Uses locks.
+        :param service_name: The service name (e.g., "//blp/refdata").
+        :return: True if the service is opened successfully, False otherwise.
+        """
+        # First check (outside main lock) for the common case where service is already open
         with self.service_states_lock:
             current_state = self.service_states.get(service_name)
-
             if current_state == 'opened':
                 return True
-            if current_state == 'opening':
-                # 他のスレッドがオープン中の場合は待機
-                pass # ロックがあるので待機は不要、後続の while ループで処理
-            elif current_state == 'failed':
-                 self.logger.warning(f"Service {service_name} previously failed to open. Retrying...")
-                 # 再試行のために状態をリセット
-                 del self.service_states[service_name]
-                 current_state = None # ループに入るようにする
-            # else: current_state is None (初回オープン)
 
-        # サービスオープン開始 (ロック外)
+        # If not opened, proceed with lock for state modification and check
         if not self.session:
-            self.logger.error("Error: Session not started.")
+            self.logger.error("Error: Session not started. Cannot open service.")
             return False
 
-        # 再度ロックを取得して状態を確認・設定
+        needs_open_attempt = False
         with self.service_states_lock:
-             # 他のスレッドが待機中にオープン完了したか、または失敗したか再チェック
             current_state = self.service_states.get(service_name)
             if current_state == 'opened':
-                 return True
-            if current_state == 'opening':
-                 # まだ他のスレッドがオープン中 -> 待つ
-                 pass
+                return True # Opened by another thread while waiting for lock
+            elif current_state == 'opening':
+                self.logger.debug(f"Service {service_name} is already being opened by another thread. Waiting...")
+                # We will wait outside the lock
             elif current_state == 'failed':
-                 # 待機中に失敗した -> False を返す
-                 self.logger.error(f"Service {service_name} failed to open while waiting.")
-                 return False
-            else: # None または再試行
-                 self.logger.info(f"Opening service: {service_name}")
+                 self.logger.warning(f"Service {service_name} previously failed to open. Retrying...")
+                 # Reset state to allow retry
+                 del self.service_states[service_name]
                  self.service_states[service_name] = 'opening'
-                 # サービスオープンリクエスト発行
+                 needs_open_attempt = True
+            else: # State is None (first attempt)
+                 self.logger.info(f"Initiating open for service: {service_name}")
+                 self.service_states[service_name] = 'opening'
+                 needs_open_attempt = True
+
+            # If we marked it for opening, make the API call now (still holding lock briefly)
+            if needs_open_attempt:
                  if not self.session.openService(service_name):
-                     self.logger.error(f"Failed to initiate opening service: {service_name}")
-                     self.service_states[service_name] = 'failed'
+                     self.logger.error(f"Failed to initiate opening service request: {service_name}")
+                     self.service_states[service_name] = 'failed' # Update state under lock
                      return False
 
-        # サービスが開くまで待機 (ロック外)
-        timeout = 20 # サービスオープンタイムアウト
+        # Wait for the service to open (outside the state modification lock)
+        timeout = 20 # Service opening timeout
         start_time = time.time()
         opened_successfully = False
         while True:
@@ -404,603 +432,720 @@ class BlpApiWrapper:
                 current_state = self.service_states.get(service_name)
 
             if current_state == 'opened':
-                self.logger.info(f"Service {service_name} opened successfully.")
+                self.logger.info(f"Service {service_name} confirmed opened.")
                 opened_successfully = True
                 break
             if current_state == 'failed':
-                self.logger.error(f"Service {service_name} failed to open (detected state).")
+                self.logger.error(f"Service {service_name} failed to open (detected state change).")
                 opened_successfully = False
                 break
-            if current_state != 'opening':
-                self.logger.error(f"Unexpected service state '{current_state}' for {service_name} while waiting.")
-                opened_successfully = False
-                break
+            # if current_state != 'opening': # Should not happen if logic is correct
+            #     self.logger.error(f"Unexpected service state '{current_state}' for {service_name} while waiting.")
+            #     opened_successfully = False
+            #     break
 
+            # Check timeout
             if time.time() - start_time > timeout:
-                self.logger.error(f"Timeout opening service {service_name} after {timeout} seconds.")
+                self.logger.error(f"Timeout waiting for service {service_name} to open after {timeout} seconds.")
                 with self.service_states_lock:
-                     # タイムアウト時も状態を failed に設定
+                     # Ensure state is marked as failed on timeout if it was still 'opening'
                      if self.service_states.get(service_name) == 'opening':
                          self.service_states[service_name] = 'failed'
                 opened_successfully = False
                 break
 
-            # イベントが処理されるのを待つ
+            # Wait briefly for events to be processed by the event loop thread
             time.sleep(0.1)
 
         return opened_successfully
 
-
     def _event_loop(self):
-        """イベントキューを処理するループ (別スレッドで実行)"""
+        """The loop that processes events from the Bloomberg session queue (runs in a separate thread)."""
         self.logger.info("Event loop started.")
         while not self.shutdown_event.is_set():
             try:
-                # イベントキューからイベントを取得 (タイムアウト付き)
+                # Get the next event from the session's event queue (with timeout)
                 event = self.session.nextEvent(timeout=500) # 500ms timeout
 
-                # イベントタイプに応じて処理を分岐
-                if event.eventType() == blpapi.Event.TIMEOUT:
-                    self.logger.debug("nextEvent timed out.")
-                    continue
-                elif event.eventType() in (PARTIAL_RESPONSE, RESPONSE):
-                    # データレスポンスイベント
+                # Branch processing based on event type
+                event_type = event.eventType()
+
+                if event_type == blpapi.Event.TIMEOUT:
+                    # self.logger.debug("nextEvent timed out.")
+                    continue # No event received within timeout, continue loop
+                elif event_type in (PARTIAL_RESPONSE, RESPONSE):
+                    # Handle data response events
                     for msg in event:
-                        self._process_response_message(msg, event.eventType())
-                elif event.eventType() in (ADMIN_EVENT, SESSION_STATUS, SERVICE_STATUS):
-                    # 管理イベントやステータスイベント
+                        self._process_response_message(msg, event_type)
+                elif event_type in (ADMIN_EVENT, SESSION_STATUS, SERVICE_STATUS):
+                    # Handle administrative and status events
                     self._process_admin_or_status_event(event)
+                # Add handling for other event types if needed (e.g., MARKET_DATA_EVENTS)
+                # elif event_type == blpapi.Event.MARKET_DATA_EVENTS:
+                #      self.logger.debug("Market data event received (subscription handling needed).")
+                #      # Add subscription processing logic here if using mktdata service
                 else:
-                    # 未知または無視するイベントタイプ
-                    self.logger.debug(f"Ignoring event type: {event.eventType()}")
-                    # メッセージ内容をデバッグログに出力する場合
+                    # Log unknown or ignored event types for debugging
+                    self.logger.debug(f"Ignoring event type: {event_type}")
+                    # Optionally log message contents for unknown events
                     # for msg in event:
-                    #     self.logger.debug(f"Ignored message: {msg}")
+                    #     self.logger.debug(f"Ignored message content: {msg}")
 
             except Exception as e:
-                # イベントループ内で予期せぬエラーが発生した場合
+                # Catch unexpected errors within the event loop
                 self.logger.exception(f"Critical error in event loop: {e}")
-                # 深刻な場合はセッション停止や再起動を検討
-                # ここではループを継続するが、状況によっては終了させるべき
-                time.sleep(1) # エラー発生時に無限ループを防ぐ
+                # Depending on the error, consider session restart or shutdown
+                # For now, log and continue, but could indicate a serious issue
+                time.sleep(1) # Prevent tight loop on continuous errors
 
         self.logger.info("Event loop finished.")
 
     def _process_response_message(self, msg, event_type):
-        """データリクエストに対するレスポンスメッセージを処理"""
+        """Processes response messages related to data requests."""
         cids = msg.correlationIds()
         if not cids:
-            self.logger.warning(f"Received response message with no Correlation ID: {msg.messageType()}")
+            # Should not happen for request responses, but check defensively
+            self.logger.warning(f"Received response message with no Correlation ID: MsgType={msg.messageType()}")
             return
 
-        # 通常、CIDは1つだが、複数含まれる可能性も考慮 (あまりない)
+        # Typically only one CID, but the API allows multiple
         for cid in cids:
-            if not cid.isObject(): # User ObjectではなくValueの場合
+            # Ensure it's a value-based CID (integer we assigned)
+            if not cid.isObject():
                  cid_value = cid.value()
                  self.logger.debug(f"Processing response for CID: {cid_value}, EventType: {event_type}, MsgType: {msg.messageType()}")
 
+                 # --- Access response data structure safely (using lock) ---
                  with self.response_data_lock:
                     if cid_value not in self.response_data:
-                        # タイムアウトなどで既に削除されたか、無効なCIDの可能性
-                        self.logger.warning(f"Received response for unknown or outdated CID: {cid_value}. Message Type: {msg.messageType()}")
-                        continue
+                        # Could happen if request timed out and was already removed, or invalid CID
+                        self.logger.warning(f"Received response for unknown or outdated CID: {cid_value}. Message Type: {msg.messageType()}. Ignoring.")
+                        continue # Ignore this message
 
-                    # --- レスポンスデータの状態を取得 ---
+                    # Get the current state for this request
                     current_response = self.response_data[cid_value]
-                    # すでに完了 or エラー状態なら処理しない (重複メッセージなど)
+
+                    # If already completed or errored out, potentially a duplicate or late message
                     if current_response["status"] in ["complete", "error"]:
-                         self.logger.debug(f"Ignoring message for already completed/errored CID: {cid_value}")
+                         self.logger.debug(f"Ignoring message for already finalized CID: {cid_value} (Status: {current_response['status']})")
                          continue
 
-
-                    # --- メッセージ内容の解析 ---
+                    # --- Parse message content ---
                     has_request_level_error = False
 
-                    # 1. リクエスト全体のエラーチェック
+                    # 1. Check for request-level errors (affecting the whole request)
                     if msg.hasElement(RESPONSE_ERROR):
                         error_element = msg.getElement(RESPONSE_ERROR)
                         error_info = self._extract_error_info(error_element)
                         log_msg = f"CID {cid_value}: RequestError - Category: {error_info['category']}, SubCategory: {error_info['subcategory']}, Message: {error_info['message']}"
                         self.logger.error(log_msg)
                         current_response["errors"].append({"type": "RequestError", "details": error_info})
-                        current_response["status"] = "error"
+                        current_response["status"] = "error" # Mark request as failed
                         has_request_level_error = True
 
-                    # RequestFailure メッセージタイプ
+                    # Also check for RequestFailure message type (can indicate more severe issues)
                     if msg.messageType() == REQUEST_FAILURE:
                          if msg.hasElement(REASON):
                              reason = msg.getElement(REASON)
                              error_info = self._extract_error_info(reason)
                              log_msg = f"CID {cid_value}: RequestFailure - Category: {error_info['category']}, SubCategory: {error_info['subcategory']}, Message: {error_info['message']}"
-                             self.logger.error(log_msg)
-                             current_response["errors"].append({"type": "RequestFailure", "details": error_info})
-                             current_response["status"] = "error"
-                             has_request_level_error = True
                          else:
+                              error_info = {"message": "No reason element found in RequestFailure"}
                               log_msg = f"CID {cid_value}: RequestFailure received with no reason element."
-                              self.logger.error(log_msg)
-                              current_response["errors"].append({"type": "RequestFailure", "details": {"message": "No reason provided"}})
-                              current_response["status"] = "error"
-                              has_request_level_error = True
+                         self.logger.error(log_msg)
+                         current_response["errors"].append({"type": "RequestFailure", "details": error_info})
+                         current_response["status"] = "error"
+                         has_request_level_error = True
 
-                    # リクエストレベルのエラーがなければ、データを抽出
+                    # 2. If no request-level error, extract data
                     if not has_request_level_error:
-                        # 2. RefData / HistData のデータ抽出
+                        # Check for different data structures based on request type
+
+                        # Reference Data or Historical Data Response
                         if msg.hasElement(SECURITY_DATA):
                             security_data_array = msg.getElement(SECURITY_DATA)
-                            for sec_data in security_data_array.values():
-                                parsed_sec_data = self._parse_security_data(sec_data, cid_value)
+                            for sec_data_element in security_data_array.values(): # Iterate through security data blocks
+                                parsed_sec_data = self._parse_security_data(sec_data_element, cid_value)
                                 current_response["data"].append(parsed_sec_data)
-                                # 証券レベルやフィールドレベルのエラーもエラーリストに追加
-                                current_response["errors"].extend(parsed_sec_data["errors"])
+                                # Add any security/field level errors found during parsing to the main error list
+                                current_response["errors"].extend(parsed_sec_data.get("errors", []))
 
-                        # 3. Intraday Bar データ抽出
+                        # Intraday Bar Response
                         elif msg.hasElement(BAR_DATA):
                             bar_data_element = msg.getElement(BAR_DATA)
                             if bar_data_element.hasElement(BAR_TICK_DATA):
                                 bar_tick_data_array = bar_data_element.getElement(BAR_TICK_DATA)
-                                for bar_tick in bar_tick_data_array.values():
-                                    parsed_bar = self._parse_bar_tick_data(bar_tick, cid_value)
-                                    current_response["data"].append(parsed_bar)
+                                for bar_tick_element in bar_tick_data_array.values(): # Iterate through bars
+                                    parsed_bar = self._parse_bar_tick_data(bar_tick_element, cid_value)
+                                    if parsed_bar: # Only add if parsing was successful
+                                        current_response["data"].append(parsed_bar)
                             else:
                                 self.logger.warning(f"CID {cid_value}: IntradayBarResponse received but no 'barTickData' element found.")
 
-                        # 4. Intraday Tick データ抽出
+                        # Intraday Tick Response
                         elif msg.hasElement(TICK_DATA):
-                            tick_data_element = msg.getElement(TICK_DATA)
-                            if tick_data_element.hasElement(TICK_DATA): # ネストされている場合がある
-                                tick_data_array = tick_data_element.getElement(TICK_DATA)
-                                for tick in tick_data_array.values():
-                                     parsed_tick = self._parse_tick_data(tick, cid_value)
-                                     current_response["data"].append(parsed_tick)
+                            # Tick data might be nested within another TICK_DATA element
+                            outer_tick_data = msg.getElement(TICK_DATA)
+                            if outer_tick_data.hasElement(TICK_DATA):
+                                tick_data_array = outer_tick_data.getElement(TICK_DATA)
+                                for tick_element in tick_data_array.values(): # Iterate through ticks
+                                     parsed_tick = self._parse_tick_data(tick_element, cid_value)
+                                     if parsed_tick:
+                                         current_response["data"].append(parsed_tick)
                             else:
                                  self.logger.warning(f"CID {cid_value}: IntradayTickResponse received but no nested 'tickData' element found.")
 
-                        # 5. BQLなどの他のレスポンスタイプ (将来用)
+                        # Add handling for other response types (e.g., BQL) if needed in the future
                         # elif msg.messageType() == blpapi.Name("BqlResponse"):
-                        #     # BQL専用の解析ロジック
+                        #     # Add BQL parsing logic here
                         #     pass
 
-                        else:
-                            # 予期しないデータ構造
-                            self.logger.warning(f"CID {cid_value}: Received response message with unknown data structure. MsgType: {msg.messageType()}")
-                            # メッセージ内容をダンプ
-                            # self.logger.debug(f"Unknown message content: {msg}")
+                        elif event_type == RESPONSE and not current_response["data"] and not current_response["errors"]:
+                             # If it's the final response but contains no known data structures and no errors were logged yet
+                             # This might happen for requests that legitimately return no data (e.g., hist data for a future date)
+                             # Or it could be an unhandled response format.
+                             self.logger.info(f"CID {cid_value}: Final response received with no data or known errors. MessageType: {msg.messageType()}")
+                             # You might want to log the raw message here for inspection:
+                             # self.logger.debug(f"CID {cid_value}: Raw final empty message: {msg}")
 
 
-                    # --- レスポンスステータスの更新 ---
-                    # 既にエラー状態になっていなければ、イベントタイプに基づいて更新
+                    # --- Update response status ---
+                    # Only update status if not already marked as 'error'
                     if current_response["status"] != "error":
                         if event_type == RESPONSE:
                             current_response["status"] = "complete"
-                            self.logger.info(f"CID {cid_value}: Response complete.")
+                            self.logger.info(f"CID {cid_value}: Response marked complete.")
                         elif event_type == PARTIAL_RESPONSE:
                             current_response["status"] = "partial"
-                            self.logger.info(f"CID {cid_value}: Partial response received.")
-                 # --- ロック解放 ---
+                            # No need to log every partial response, could be verbose
+                            self.logger.debug(f"CID {cid_value}: Partial response received.")
+
+                 # --- Lock released ---
             else:
-                 # CIDがオブジェクトの場合 (認証など特別なケース)
+                 # CID is an object (e.g., for authorization responses handled elsewhere)
                  self.logger.debug(f"Ignoring message with object Correlation ID in response processor: {cid}")
 
+
     def _extract_error_info(self, error_element):
-        """エラー要素から情報を抽出するヘルパー"""
+        """Helper function to extract structured information from an error element."""
         info = {
-            "category": error_element.getElementAsString(CATEGORY) if error_element.hasElement(CATEGORY) else "UNKNOWN",
-            "subcategory": error_element.getElementAsString(SUBCATEGORY) if error_element.hasElement(SUBCATEGORY) else "UNKNOWN",
-            "message": error_element.getElementAsString(MESSAGE) if error_element.hasElement(MESSAGE) else "No message",
-            "code": error_element.getElementAsInteger(CODE) if error_element.hasElement(CODE) else -1,
-            "source": error_element.getElementAsString(SOURCE) if error_element.hasElement(SOURCE) else "UNKNOWN",
+            "category": "UNKNOWN",
+            "subcategory": "UNKNOWN",
+            "message": "No message available",
+            "code": -1,
+            "source": "UNKNOWN",
         }
-        # エラー要素全体もログ用に保持しても良いかも
-        # info["raw"] = str(error_element)
+        try:
+            if error_element.hasElement(CATEGORY): info["category"] = error_element.getElementAsString(CATEGORY)
+            if error_element.hasElement(SUBCATEGORY): info["subcategory"] = error_element.getElementAsString(SUBCATEGORY)
+            if error_element.hasElement(MESSAGE): info["message"] = error_element.getElementAsString(MESSAGE)
+            if error_element.hasElement(CODE): info["code"] = error_element.getElementAsInteger(CODE)
+            if error_element.hasElement(SOURCE): info["source"] = error_element.getElementAsString(SOURCE)
+            # Optionally include the raw element for deeper debugging
+            # info["raw_element"] = str(error_element)
+        except Exception as e:
+            self.logger.error(f"Error extracting details from error element: {e}. Element: {error_element}")
+            info["message"] = f"Error parsing error element: {e}"
         return info
 
-    def _parse_security_data(self, sec_data, cid_value):
-        """securityData 要素を解析 (RefData/HistData)"""
+    def _parse_security_data(self, sec_data_element, cid_value):
+        """Parses a 'securityData' element (for RefData/HistData responses)."""
         result = {"security": "UNKNOWN", "data": {}, "errors": []}
-        if sec_data.hasElement(SECURITY_NAME):
-            result["security"] = sec_data.getElementAsString(SECURITY_NAME)
-        sec_name = result["security"] # ログ用
+        try:
+            if sec_data_element.hasElement(SECURITY_NAME):
+                result["security"] = sec_data_element.getElementAsString(SECURITY_NAME)
+            sec_name = result["security"] # For logging
 
-        # 証券レベルのエラーチェック
-        if sec_data.hasElement(SECURITY_ERROR):
-            error_element = sec_data.getElement(SECURITY_ERROR)
-            error_info = self._extract_error_info(error_element)
-            log_msg = f"CID {cid_value}, Security {sec_name}: SecurityError - Category: {error_info['category']}, Message: {error_info['message']}"
-            self.logger.warning(log_msg)
-            result["errors"].append({"type": "SecurityError", "details": error_info})
-
-        # フィールドデータ抽出 (HistDataの場合は配列、RefDataの場合は辞書的)
-        if sec_data.hasElement(FIELD_DATA):
-            field_data = sec_data.getElement(FIELD_DATA)
-            if field_data.isArray(): # HistoricalDataResponse
-                result["data"] = [] # リストとして初期化
-                for daily_data in field_data.values():
-                    day_result = {}
-                    for field in daily_data.elements():
-                        field_name = str(field.name())
-                        try:
-                             # 型に応じて適切な getValueAs を呼ぶ (ここでは単純化)
-                             if field.datatype() == blpapi.DataType.FLOAT64 or field.datatype() == blpapi.DataType.FLOAT32:
-                                 day_result[field_name] = field.getValueAsFloat()
-                             elif field.datatype() == blpapi.DataType.INT64 or field.datatype() == blpapi.DataType.INT32:
-                                 day_result[field_name] = field.getValueAsInteger()
-                             elif field.datatype() == blpapi.DataType.DATE or field.datatype() == blpapi.DataType.DATETIME:
-                                  # datetimeオブジェクトに変換 (タイムゾーン考慮が必要な場合あり)
-                                  dt_val = field.getValueAsDatetime()
-                                  # naiveなdatetimeかもしれないので注意
-                                  day_result[field_name] = dt_val # .isoformat() など文字列にしても良い
-                             else:
-                                 day_result[field_name] = field.getValueAsString()
-                        except Exception as e:
-                             self.logger.warning(f"CID {cid_value}, Sec {sec_name}: Error parsing field '{field_name}': {e}. Using string representation.")
-                             day_result[field_name] = field.getValueAsString() # エラー時は文字列で取得試行
-                    result["data"].append(day_result)
-            else: # ReferenceDataResponse
-                result["data"] = {} # 辞書として初期化
-                for field in field_data.elements():
-                    field_name = str(field.name())
-                    try:
-                        if field.datatype() == blpapi.DataType.FLOAT64 or field.datatype() == blpapi.DataType.FLOAT32:
-                            result["data"][field_name] = field.getValueAsFloat()
-                        elif field.datatype() == blpapi.DataType.INT64 or field.datatype() == blpapi.DataType.INT32:
-                            result["data"][field_name] = field.getValueAsInteger()
-                        elif field.datatype() == blpapi.DataType.DATE or field.datatype() == blpapi.DataType.DATETIME:
-                             dt_val = field.getValueAsDatetime()
-                             result["data"][field_name] = dt_val #.isoformat()
-                        elif field.datatype() == blpapi.DataType.STRING:
-                             result["data"][field_name] = field.getValueAsString()
-                        elif field.isArray(): # BDSのような配列データ
-                             # 配列内の要素を処理 (さらにネストする可能性も)
-                             array_values = []
-                             for item in field.values():
-                                  # item がさらに要素を持つ場合 (Bulk Field)
-                                  if item.numElements() > 0:
-                                       item_data = {}
-                                       for sub_element in item.elements():
-                                            sub_name = str(sub_element.name())
-                                            # 再帰的に値を取得するヘルパー関数があると良いかも
-                                            try:
-                                                item_data[sub_name] = sub_element.getValueAsString() # ここも型判定すべき
-                                            except:
-                                                item_data[sub_name] = "[Error Parsing]"
-                                       array_values.append(item_data)
-                                  else:
-                                       try:
-                                            array_values.append(item.getValueAsString()) # 単純な配列要素
-                                       except:
-                                            array_values.append("[Error Parsing]")
-                             result["data"][field_name] = array_values
-                        else:
-                            result["data"][field_name] = field.getValueAsString()
-                    except Exception as e:
-                        self.logger.warning(f"CID {cid_value}, Sec {sec_name}: Error parsing field '{field_name}': {e}. Using string representation.")
-                        result["data"][field_name] = field.getValueAsString()
-
-        # フィールドレベルの例外チェック
-        if sec_data.hasElement(FIELD_EXCEPTIONS):
-            field_exceptions = sec_data.getElement(FIELD_EXCEPTIONS)
-            for ex in field_exceptions.values():
-                field_id = ex.getElementAsString(FIELD_ID)
-                error_info = self._extract_error_info(ex.getElement(ERROR_INFO))
-                log_msg = f"CID {cid_value}, Security {sec_name}, Field {field_id}: FieldError - Category: {error_info['category']}, Message: {error_info['message']}"
+            # Check for security-level errors
+            if sec_data_element.hasElement(SECURITY_ERROR):
+                error_element = sec_data_element.getElement(SECURITY_ERROR)
+                error_info = self._extract_error_info(error_element)
+                log_msg = f"CID {cid_value}, Security '{sec_name}': SecurityError - Category: {error_info['category']}, Message: {error_info['message']}"
                 self.logger.warning(log_msg)
-                result["errors"].append({"type": "FieldError", "field": field_id, "details": error_info})
+                result["errors"].append({"type": "SecurityError", "details": error_info})
+                # Mark data as potentially incomplete or invalid if security error occurs
+                result["data"] = {"__security_error__": True} # Indicate error in data part
+
+
+            # Extract field data (structure differs for HistData vs RefData)
+            if sec_data_element.hasElement(FIELD_DATA):
+                field_data = sec_data_element.getElement(FIELD_DATA)
+
+                if field_data.isArray(): # HistoricalDataResponse contains an array of daily/periodic data
+                    result["data"] = [] # Initialize as list for historical data
+                    for daily_data_element in field_data.values():
+                        day_result = {}
+                        for field_element in daily_data_element.elements():
+                            field_name = str(field_element.name())
+                            day_result[field_name] = self._get_element_value(field_element, cid_value, sec_name, field_name)
+                        # Ensure 'date' field is present if expected (often named 'date')
+                        if 'date' not in day_result and daily_data_element.hasElement('date'):
+                             day_result['date'] = self._get_element_value(daily_data_element.getElement('date'), cid_value, sec_name, 'date')
+                        result["data"].append(day_result)
+                else: # ReferenceDataResponse contains a flat structure of fields
+                    result["data"] = {} # Initialize as dict for reference data
+                    for field_element in field_data.elements():
+                        field_name = str(field_element.name())
+                        result["data"][field_name] = self._get_element_value(field_element, cid_value, sec_name, field_name)
+
+            # Check for field-level exceptions
+            if sec_data_element.hasElement(FIELD_EXCEPTIONS):
+                field_exceptions_array = sec_data_element.getElement(FIELD_EXCEPTIONS)
+                for exception_element in field_exceptions_array.values():
+                    field_id = exception_element.getElementAsString(FIELD_ID)
+                    error_info = self._extract_error_info(exception_element.getElement(ERROR_INFO))
+                    log_msg = f"CID {cid_value}, Security '{sec_name}', Field '{field_id}': FieldError - Category: {error_info['category']}, Message: {error_info['message']}"
+                    self.logger.warning(log_msg)
+                    result["errors"].append({"type": "FieldError", "field": field_id, "details": error_info})
+                    # Optionally mark the specific field in data as having an error
+                    if isinstance(result["data"], dict):
+                         result["data"][field_id] = f"__field_error__: {error_info['message']}"
+
+        except Exception as e:
+             self.logger.exception(f"CID {cid_value}: Failed to parse securityData element for '{result.get('security', 'UNKNOWN')}': {e}")
+             result["errors"].append({"type": "ParsingError", "details": {"message": f"Failed to parse securityData: {e}"}})
 
         return result
 
-    def _parse_bar_tick_data(self, bar_tick, cid_value):
-        """barTickData 要素を解析 (IntradayBar)"""
+    def _get_element_value(self, element, cid_value, sec_name, field_name):
+        """Helper to safely get a value from a blpapi Element, handling types."""
+        try:
+            dtype = element.datatype()
+            if dtype == blpapi.DataType.FLOAT64 or dtype == blpapi.DataType.FLOAT32:
+                return element.getValueAsFloat()
+            elif dtype == blpapi.DataType.INT64 or dtype == blpapi.DataType.INT32:
+                return element.getValueAsInteger()
+            elif dtype == blpapi.DataType.DATE:
+                dt_val = element.getValueAsDatetime()
+                # Return as date object if time is midnight, else keep as datetime
+                if dt_val.hour == 0 and dt_val.minute == 0 and dt_val.second == 0 and dt_val.microsecond == 0:
+                    return dt_val.date()
+                return dt_val
+            elif dtype == blpapi.DataType.DATETIME:
+                 # Returns a datetime.datetime object
+                 return element.getValueAsDatetime()
+            elif dtype == blpapi.DataType.BOOL:
+                 return element.getValueAsBool()
+            elif dtype == blpapi.DataType.STRING:
+                 return element.getValueAsString()
+            elif element.isArray():
+                 # Handle arrays (like in BDS results)
+                 array_values = []
+                 for item_element in element.values():
+                      # Check if array items are complex types (elements themselves)
+                      if item_element.numElements() > 0 and item_element.datatype() == blpapi.DataType.SEQUENCE:
+                           item_data = {}
+                           for sub_element in item_element.elements():
+                                sub_name = str(sub_element.name())
+                                # Recursively call or handle nested types simply here
+                                item_data[sub_name] = self._get_element_value(sub_element, cid_value, sec_name, f"{field_name}.{sub_name}")
+                           array_values.append(item_data)
+                      else:
+                           # Simple value in array
+                           array_values.append(self._get_element_value(item_element, cid_value, sec_name, field_name))
+                 return array_values
+            else:
+                # Default or unknown type, get as string
+                return element.getValueAsString()
+        except Exception as e:
+            self.logger.warning(f"CID {cid_value}, Sec '{sec_name}', Field '{field_name}': Error parsing element value (Type: {element.datatype()}): {e}. Returning string representation.")
+            try:
+                 # Fallback to string representation
+                 return element.getValueAsString()
+            except Exception as e_str:
+                 self.logger.error(f"CID {cid_value}, Sec '{sec_name}', Field '{field_name}': Could not get string fallback value: {e_str}")
+                 return "[PARSING_ERROR]"
+
+    def _parse_bar_tick_data(self, bar_tick_element, cid_value):
+        """Parses a 'barTickData' element (for IntradayBar responses)."""
         data = {}
         try:
-            # datetimeオブジェクトとして取得 (UTCのはず)
-            data['time'] = bar_tick.getElementAsDatetime(TIME) if bar_tick.hasElement(TIME) else None
-            data['open'] = bar_tick.getElementAsFloat(OPEN) if bar_tick.hasElement(OPEN) else None
-            data['high'] = bar_tick.getElementAsFloat(HIGH) if bar_tick.hasElement(HIGH) else None
-            data['low'] = bar_tick.getElementAsFloat(LOW) if bar_tick.hasElement(LOW) else None
-            data['close'] = bar_tick.getElementAsFloat(CLOSE) if bar_tick.hasElement(CLOSE) else None
-            data['volume'] = bar_tick.getElementAsInteger(VOLUME) if bar_tick.hasElement(VOLUME) else None
-            data['numEvents'] = bar_tick.getElementAsInteger(NUM_EVENTS) if bar_tick.hasElement(NUM_EVENTS) else None
-            # 他に必要な要素があれば追加
+            # Use helper to get values, assuming fields exist
+            data['time'] = self._get_element_value(bar_tick_element.getElement(TIME), cid_value, "IntradayBar", "time") if bar_tick_element.hasElement(TIME) else None
+            data['open'] = self._get_element_value(bar_tick_element.getElement(OPEN), cid_value, "IntradayBar", "open") if bar_tick_element.hasElement(OPEN) else None
+            data['high'] = self._get_element_value(bar_tick_element.getElement(HIGH), cid_value, "IntradayBar", "high") if bar_tick_element.hasElement(HIGH) else None
+            data['low'] = self._get_element_value(bar_tick_element.getElement(LOW), cid_value, "IntradayBar", "low") if bar_tick_element.hasElement(LOW) else None
+            data['close'] = self._get_element_value(bar_tick_element.getElement(CLOSE), cid_value, "IntradayBar", "close") if bar_tick_element.hasElement(CLOSE) else None
+            data['volume'] = self._get_element_value(bar_tick_element.getElement(VOLUME), cid_value, "IntradayBar", "volume") if bar_tick_element.hasElement(VOLUME) else None
+            data['numEvents'] = self._get_element_value(bar_tick_element.getElement(NUM_EVENTS), cid_value, "IntradayBar", "numEvents") if bar_tick_element.hasElement(NUM_EVENTS) else None
+            # Add other potentially useful fields if needed
+        except blpapi.NotFoundException as e:
+             self.logger.warning(f"CID {cid_value}: Optional element not found while parsing Intraday Bar data: {e}. Raw: {bar_tick_element}")
         except Exception as e:
-            self.logger.error(f"CID {cid_value}: Error parsing Intraday Bar data: {e}. Raw: {bar_tick}")
-            # エラー発生時は部分的なデータやNoneを返す
+            self.logger.error(f"CID {cid_value}: Error parsing Intraday Bar data: {e}. Raw: {bar_tick_element}")
+            return None # Indicate parsing failure
         return data
 
-    def _parse_tick_data(self, tick, cid_value):
-        """tickData 要素を解析 (IntradayTick)"""
+    def _parse_tick_data(self, tick_element, cid_value):
+        """Parses a 'tickData' element (nested within TICK_DATA for IntradayTick responses)."""
         data = {}
         try:
-             # datetimeオブジェクトとして取得 (UTCのはず)
-            data['time'] = tick.getElementAsDatetime(TIME) if tick.hasElement(TIME) else None
-            data['type'] = tick.getElementAsString(TYPE) if tick.hasElement(TYPE) else None # 例: "TRADE", "BID", "ASK"
-            data['value'] = tick.getElementAsFloat(VALUE) if tick.hasElement(VALUE) else None # 価格
-            # size, conditionCodes など他の要素も必要に応じて追加
-            # data['size'] = tick.getElementAsInteger("size") if tick.hasElement("size") else None
-            # if tick.hasElement("conditionCodes"):
-            #     data['conditionCodes'] = tick.getElementAsString("conditionCodes")
+            data['time'] = self._get_element_value(tick_element.getElement(TIME), cid_value, "IntradayTick", "time") if tick_element.hasElement(TIME) else None
+            data['type'] = self._get_element_value(tick_element.getElement(TYPE), cid_value, "IntradayTick", "type") if tick_element.hasElement(TYPE) else None # e.g., "TRADE", "BID", "ASK"
+            data['value'] = self._get_element_value(tick_element.getElement(VALUE), cid_value, "IntradayTick", "value") if tick_element.hasElement(VALUE) else None # Price/Value
+            # Add other common tick fields if needed
+            if tick_element.hasElement("size"):
+                data['size'] = self._get_element_value(tick_element.getElement("size"), cid_value, "IntradayTick", "size")
+            if tick_element.hasElement("conditionCodes"):
+                 data['conditionCodes'] = self._get_element_value(tick_element.getElement("conditionCodes"), cid_value, "IntradayTick", "conditionCodes")
 
+        except blpapi.NotFoundException as e:
+             self.logger.warning(f"CID {cid_value}: Optional element not found while parsing Intraday Tick data: {e}. Raw: {tick_element}")
         except Exception as e:
-            self.logger.error(f"CID {cid_value}: Error parsing Intraday Tick data: {e}. Raw: {tick}")
+            self.logger.error(f"CID {cid_value}: Error parsing Intraday Tick data: {e}. Raw: {tick_element}")
+            return None # Indicate parsing failure
         return data
 
 
     def _process_admin_or_status_event(self, event):
-        """管理イベントやステータスイベントを処理"""
+        """Processes administrative and session/service status events."""
         for msg in event:
             msg_type = msg.messageType()
-            self.logger.debug(f"Processing Admin/Status Event: Type={event.eventType()}, MsgType={msg_type}")
+            event_type = event.eventType()
+            self.logger.debug(f"Processing Admin/Status Event: Type={event_type}, MsgType={msg_type}")
+            self.logger.debug(f"Admin/Status Message Content: {msg}") # Log full message content at debug level
 
             if msg_type == SESSION_STARTED:
                 self.logger.info("SessionStarted event processed.")
+                # Potentially signal readiness here if needed
             elif msg_type == SESSION_STARTUP_FAILURE:
                 self.logger.error(f"SessionStartupFailure event: {msg}")
-                # 深刻なエラーなのでセッション停止を試みるべきか？
+                # This is critical, consider stopping the session or attempting restart
+                self.shutdown_event.set() # Signal event loop to stop
             elif msg_type == SESSION_TERMINATED:
-                self.logger.warning(f"SessionTerminated event: {msg}")
-                # セッションが予期せず終了した場合の処理
-                # 再接続ロジックなどが必要ならここから起動
-                self.shutdown_event.set() # イベントループを止める
+                self.logger.warning(f"SessionTerminated event received: {msg}")
+                # Session ended unexpectedly. May need reconnect logic.
+                self.shutdown_event.set() # Signal event loop to stop
             elif msg_type == SERVICE_OPENED:
-                service_name = msg.getElementAsString("serviceName")
-                with self.service_states_lock:
-                    self.service_states[service_name] = 'opened'
-                self.logger.info(f"Service opened event processed: {service_name}")
+                if msg.hasElement("serviceName"):
+                    service_name = msg.getElementAsString("serviceName")
+                    with self.service_states_lock:
+                        self.service_states[service_name] = 'opened'
+                    self.logger.info(f"Service opened event processed: {service_name}")
+                else:
+                    self.logger.warning(f"ServiceOpened event received without serviceName: {msg}")
             elif msg_type == SERVICE_OPEN_FAILURE:
-                service_name = msg.getElementAsString("serviceName")
-                with self.service_states_lock:
-                    self.service_states[service_name] = 'failed'
-                self.logger.error(f"Service open failure event processed: {service_name}, Reason: {msg}")
+                if msg.hasElement("serviceName"):
+                    service_name = msg.getElementAsString("serviceName")
+                    with self.service_states_lock:
+                        self.service_states[service_name] = 'failed'
+                    # Extract reason if available
+                    reason_info = "No reason provided"
+                    if msg.hasElement(REASON):
+                         reason_info = self._extract_error_info(msg.getElement(REASON))
+                    self.logger.error(f"Service open failure event processed: {service_name}, Reason: {reason_info}")
+                else:
+                     self.logger.error(f"ServiceOpenFailure event received without serviceName: {msg}")
             elif msg_type == SLOW_CONSUMER_WARNING:
-                self.logger.warning("SlowConsumerWarning event received. Event queue may be backing up.")
+                self.logger.warning("SlowConsumerWarning event received. Application may not be processing events fast enough.")
             elif msg_type == SLOW_CONSUMER_WARNING_CLEARED:
                  self.logger.info("SlowConsumerWarningCleared event received.")
             elif msg_type == DATA_LOSS:
-                service_name = msg.getElementAsString("serviceName")
-                num_messages_lost = msg.getElementAsInteger("numMessagesLost")
-                self.logger.critical(f"DataLoss event received for service {service_name}! Lost {num_messages_lost} messages.")
-                # データロスは深刻。対応が必要。
-            # 他の重要な管理/ステータスメッセージがあれば処理を追加
-            # 例: PermissionRequest, ResolutionSuccess/Failure など
+                service_name = msg.getElementAsString("serviceName") if msg.hasElement("serviceName") else "UNKNOWN"
+                num_messages_lost = msg.getElementAsInteger("numMessagesLost") if msg.hasElement("numMessagesLost") else -1
+                source = msg.getElementAsString("source") if msg.hasElement("source") else "UNKNOWN"
+                self.logger.critical(f"DataLoss event received for service '{service_name}', source '{source}'! Lost approx {num_messages_lost} messages.")
+                # Data loss is critical. Application needs to handle this, maybe by resubscribing or requesting snapshots.
+            # Handle other important admin/status messages as needed
+            # e.g., PermissionRequest, ResolutionSuccess/Failure, etc.
+            elif msg_type == PERMISSION_REQUEST:
+                 self.logger.warning(f"PermissionRequest event received: {msg}. Entitlements might be missing.")
+                 # Application might need to respond to this if using specific entitlement modes
+
+            else:
+                self.logger.debug(f"Ignoring admin/status message type: {msg_type}")
 
 
     def send_request(self, request, service_name,
                      timeout=None, max_retries=None, retry_delay=None):
         """
-        リクエストを送信し、完了またはタイムアウト/エラーまで待機して結果を返す。
-        リトライ機能付き。設定値がなければデフォルト値を使用。
+        Sends a request, waits for completion or timeout/error, and returns the result.
+        Includes retry logic. Uses default values from settings if parameters are None.
+
+        :param request: The blpapi.Request object to send.
+        :param service_name: The name of the service (e.g., "//blp/refdata").
+        :param timeout: Request timeout in seconds. Defaults to setting['timeout'].
+        :param max_retries: Maximum number of retries (0 means one attempt). Defaults to setting['max_retries'].
+        :param retry_delay: Initial delay between retries in seconds. Defaults to setting['retry_delay'].
+        :return: A dictionary containing the request status, data, and errors.
+                 Example: {"status": "complete"|"error", "data": [...], "errors": [...]}
         """
         if not self.session:
             self.logger.error("Session not started. Cannot send request.")
-            # ConnectionError を raise するか、エラー辞書を返すか選択
             return {"status": "error", "data": [], "errors": [{"type": "SessionError", "details": {"message": "Session not started."}}]}
 
-        # パラメータがNoneの場合はデフォルト値を使用
+        # Use default settings if parameters are not provided
         timeout = timeout if timeout is not None else self.default_timeout
         max_retries = max_retries if max_retries is not None else self.default_max_retries
         retry_delay = retry_delay if retry_delay is not None else self.default_retry_delay
 
-        # サービスがオープンしているか確認・試行
+        # Ensure the required service is open (or attempt to open it)
         if not self._open_service(service_name):
             err_msg = f"Failed to open required service: {service_name}"
             self.logger.error(err_msg)
             return {"status": "error", "data": [], "errors": [{"type": "ServiceError", "details": {"message": err_msg}}]}
 
-        # サービスオブジェクト取得
+        # Get the service object (should exist after _open_service succeeds)
         try:
             service = self.session.getService(service_name)
             if not service:
-                 # _open_service が True でも稀に None になるケースがある？念のためチェック
-                 raise ValueError(f"Could not get service object for {service_name} even after successful open.")
+                 # This should ideally not happen if _open_service returned True, but check defensively
+                 raise ValueError(f"Could not get service object for {service_name} even after successful open check.")
         except Exception as e:
              err_msg = f"Failed to get service object for {service_name}: {e}"
-             self.logger.exception(err_msg) # スタックトレースも記録
+             self.logger.exception(err_msg) # Log stack trace
              return {"status": "error", "data": [], "errors": [{"type": "ServiceError", "details": {"message": err_msg}}]}
 
 
         cid = self._get_next_correlation_id()
         cid_value = cid.value()
         last_exception = None
-        current_retry_delay = retry_delay
+        current_retry_delay = retry_delay # Initial delay
 
         for attempt in range(max_retries + 1):
             self.logger.info(f"Sending request CID: {cid_value}, Service: {service_name}, Attempt {attempt + 1}/{max_retries + 1}")
-            # self.logger.debug(f"Request details CID {cid_value}: {request}") # 必要ならリクエスト内容もログに
+            # Log request details at debug level if needed (can be verbose)
+            # self.logger.debug(f"Request details CID {cid_value}: {request}")
 
-            # 各試行でレスポンス状態を初期化 (ロック内で)
+            # Initialize response state for this attempt (within lock)
             with self.response_data_lock:
                 self.response_data[cid_value] = {"status": "pending", "data": [], "errors": []}
 
-            # リクエスト送信
+            # Send the request via the session
             try:
-                self.session.sendRequest(request=request, correlationId=cid, identity=self.identity) # Identity を使用
+                # Pass the identity object if authorization was performed
+                self.session.sendRequest(request=request, correlationId=cid, identity=self.identity)
             except Exception as e:
                 self.logger.exception(f"Failed to send request (CID: {cid_value}, Attempt {attempt + 1}): {e}")
                 last_exception = e
                 if attempt < max_retries:
                     self.logger.warning(f"Retrying send request in {current_retry_delay:.1f} seconds...")
                     time.sleep(current_retry_delay)
-                    current_retry_delay *= 2 # 指数バックオフ
-                    continue
+                    current_retry_delay *= 2 # Exponential backoff
+                    continue # Go to next attempt
                 else:
-                    # 最大リトライ回数に達したらエラーを返す
+                    # Max retries reached on send failure
                     err_msg = f"Failed to send request after {max_retries + 1} attempts: {e}"
+                    # Ensure final state is error and pop the result
                     with self.response_data_lock:
-                        # 念のため最終状態を設定してから pop
-                        self.response_data[cid_value]["status"] = "error"
-                        self.response_data[cid_value]["errors"].append({"type": "SendRequestError", "details": {"message": err_msg}})
-                        result = self.response_data.pop(cid_value)
-                    return result
+                        # Safely update and pop
+                        final_result = self.response_data.pop(cid_value, {"status": "error", "data": [], "errors": []}) # Default if already popped
+                        final_result["status"] = "error"
+                        final_result["errors"].append({"type": "SendRequestError", "details": {"message": err_msg}})
+                    return final_result
 
-            # --- 完了待機 (タイムアウトあり) ---
+            # --- Wait for completion ---
             start_time = time.time()
-            wait_outcome = "pending" # "complete", "error", "timeout"
+            wait_outcome = "pending" # Possible outcomes: "complete", "error", "timeout"
             while True:
+                # Check current status under lock
                 with self.response_data_lock:
-                    current_status = self.response_data.get(cid_value, {}).get("status", "unknown")
+                    # Use .get() to handle cases where data might be removed externally (though unlikely here)
+                    response_state = self.response_data.get(cid_value)
+                    if response_state:
+                         current_status = response_state.get("status", "unknown")
+                    else:
+                         # Response data disappeared unexpectedly!
+                         current_status = "unknown"
+                         self.logger.error(f"CID {cid_value}: Response data dictionary entry disappeared while waiting!")
 
+                # --- Check status ---
                 if current_status == "complete":
                     self.logger.info(f"CID {cid_value}: Request completed (Attempt {attempt + 1}).")
                     wait_outcome = "complete"
                     break
-                if current_status == "error":
-                    self.logger.warning(f"CID {cid_value}: Request ended with error status (Attempt {attempt + 1}).")
+                elif current_status == "error":
+                    self.logger.warning(f"CID {cid_value}: Request processing ended with error status (Attempt {attempt + 1}).")
                     wait_outcome = "error"
                     break
-                if current_status not in ["pending", "partial"]:
-                     self.logger.error(f"CID {cid_value}: Unexpected status '{current_status}' while waiting.")
-                     wait_outcome = "error" # 予期せぬ状態はエラー扱い
-                     # 状態を強制的にエラーにする
+                elif current_status == "unknown":
+                    self.logger.error(f"CID {cid_value}: Response data missing or status unknown while waiting.")
+                    wait_outcome = "error" # Treat as error
+                    last_exception = RuntimeError("Response data missing during wait")
+                    break
+                elif current_status not in ["pending", "partial"]:
+                     self.logger.error(f"CID {cid_value}: Unexpected status '{current_status}' found while waiting.")
+                     wait_outcome = "error" # Treat unexpected status as error
+                     last_exception = RuntimeError(f"Unexpected status '{current_status}'")
+                     # Force state to error under lock
                      with self.response_data_lock:
                           if cid_value in self.response_data:
                                self.response_data[cid_value]["status"] = "error"
                                self.response_data[cid_value]["errors"].append({"type": "InternalError", "details": {"message": f"Unexpected status '{current_status}'"}})
                      break
 
+                # --- Check timeout ---
                 if time.time() - start_time > timeout:
                     self.logger.warning(f"Request timed out (CID: {cid_value}, Attempt {attempt + 1}) after {timeout} seconds.")
                     wait_outcome = "timeout"
                     last_exception = TimeoutError(f"Request timed out after {timeout}s")
-                    # タイムアウト時も状態をエラーにする
+                    # Mark status as error on timeout under lock
                     with self.response_data_lock:
                          if cid_value in self.response_data:
-                              self.response_data[cid_value]["status"] = "error"
-                              self.response_data[cid_value]["errors"].append({"type": "Timeout", "details": {"message": f"Request timed out after {timeout}s"}})
+                              # Only update if still pending/partial
+                              if self.response_data[cid_value].get("status") in ["pending", "partial"]:
+                                   self.response_data[cid_value]["status"] = "error"
+                                   self.response_data[cid_value]["errors"].append({"type": "Timeout", "details": {"message": f"Request timed out after {timeout}s"}})
                     break
 
-                # イベントが処理されるのを待つ
-                time.sleep(0.05) # 待ち時間を少し短く
+                # Brief sleep to yield execution and allow event thread to process
+                time.sleep(0.05) # Adjust sleep time as needed
 
-            # --- 待機結果に基づく処理 ---
-            # 結果を取得 (ロック内で)
+            # --- Process wait outcome ---
+            # Get the final result data (pop it from the dict under lock)
             with self.response_data_lock:
-                 result = self.response_data.pop(cid_value, None) # popして取得
+                 result = self.response_data.pop(cid_value, None) # Pop safely
 
             if not result:
-                  # pop に失敗した場合 (通常は起こらないはず)
-                  err_msg = f"Internal Error: Response data for CID {cid_value} disappeared after waiting."
+                  # Should not happen if wait logic is correct, but handle defensively
+                  err_msg = f"Internal Error: Response data for CID {cid_value} was None after waiting (Outcome: {wait_outcome})."
                   self.logger.error(err_msg)
-                  # リトライを試みるか？ここでは最終エラーとする
-                  last_exception = RuntimeError(err_msg)
+                  last_exception = last_exception or RuntimeError(err_msg) # Keep original exception if timeout occurred
                   if attempt < max_retries:
                        self.logger.warning(f"Retrying due to missing response data in {current_retry_delay:.1f} seconds...")
                        time.sleep(current_retry_delay)
                        current_retry_delay *= 2
-                       continue
+                       continue # Go to next attempt
                   else:
+                       # Max retries reached after data loss
                        return {"status": "error", "data": [], "errors": [{"type": "InternalError", "details": {"message": err_msg + f" after {max_retries + 1} attempts."}}]}
 
 
-            # 待機結果がタイムアウトまたはエラーの場合、リトライ判断
-            if wait_outcome == "timeout" or wait_outcome == "error":
-                # リトライすべきエラーか判断
+            # If completed successfully (even if errors occurred within the response)
+            if wait_outcome == "complete":
+                 self.logger.info(f"CID {cid_value}: Request completed successfully (Attempt {attempt + 1}). Final status: {result.get('status')}")
+                 return result # Return the result
+
+            # If timed out or ended in error state, decide whether to retry
+            elif wait_outcome == "timeout" or wait_outcome == "error":
                 should_retry = False
                 if wait_outcome == "timeout":
-                    # タイムアウトは基本的にリトライ対象
+                    # Timeouts are generally retryable
                     should_retry = True
-                    self.logger.warning(f"CID {cid_value}: Retrying due to timeout.")
+                    self.logger.warning(f"CID {cid_value}: Request timed out, considering retry.")
                 else: # wait_outcome == "error"
-                    # エラー内容をチェックしてリトライ判断
+                    # Check the errors logged in the result to see if any are retryable
                     for error in result.get("errors", []):
-                        error_details = error.get("details", {})
-                        category = error_details.get("category", "UNKNOWN").upper()
-                        subcategory = error_details.get("subcategory", "UNKNOWN").upper()
-                        # リトライ可能なカテゴリ/サブカテゴリか？ (要調整)
-                        if category in RETRYABLE_CATEGORIES or "TIMEOUT" in category or "CONNECTION" in category:
-                            # ただし、明確にリトライ不可なエラーは除く
-                            if category not in NON_RETRYABLE_CATEGORIES and subcategory not in NON_RETRYABLE_CATEGORIES:
-                                should_retry = True
-                                last_exception = RuntimeError(f"Retrying due to potentially recoverable error: Category={category}, SubCategory={subcategory}, Message={error_details.get('message', 'N/A')}")
-                                self.logger.warning(f"CID {cid_value}: Detected potentially recoverable error, will retry. Details: {error_details}")
-                                break # リトライ決定
+                        details = error.get("details", {})
+                        category = details.get("category", "UNKNOWN").upper()
+                        subcategory = details.get("subcategory", "UNKNOWN").upper()
+                        # Define retryable conditions (needs refinement based on real errors)
+                        is_retryable_category = category in RETRYABLE_CATEGORIES or "TIMEOUT" in category or "CONNECTION" in category or "SERVER" in category
+                        is_non_retryable_error = category in NON_RETRYABLE_CATEGORIES or subcategory in NON_RETRYABLE_CATEGORIES or "INVALID" in category or "BAD" in category
 
+                        if is_retryable_category and not is_non_retryable_error:
+                            should_retry = True
+                            last_exception = last_exception or RuntimeError(f"Retryable error detected: Cat={category}, SubCat={subcategory}, Msg={details.get('message','N/A')}")
+                            self.logger.warning(f"CID {cid_value}: Detected potentially recoverable error, will retry. Details: {details}")
+                            break # Found a retryable error, no need to check others
+
+                # Perform retry if conditions met
                 if should_retry and attempt < max_retries:
                     self.logger.info(f"Retrying request CID {cid_value} in {current_retry_delay:.1f} seconds...")
                     time.sleep(current_retry_delay)
-                    current_retry_delay *= 2 # 指数バックオフ
-                    continue # 次の試行へ
+                    current_retry_delay *= 2 # Exponential backoff
+                    continue # Go to the next attempt in the loop
                 elif should_retry and attempt == max_retries:
+                    # Max retries reached after a retryable error/timeout
                     self.logger.error(f"Max retries ({max_retries + 1}) reached for CID {cid_value} after encountering retryable error/timeout.")
-                    result["errors"].append({"type": "MaxRetriesExceeded", "details": {"message": f"Failed after {max_retries + 1} attempts. Last error: {last_exception}"}})
-                    result["status"] = "error" # 最終状態はエラー
+                    result["errors"].append({"type": "MaxRetriesExceeded", "details": {"message": f"Failed after {max_retries + 1} attempts. Last error indication: {last_exception}"}})
+                    result["status"] = "error" # Ensure final status is error
                     return result
-                else: # リトライ不要なエラー or 最大リトライ回数超過
-                    self.logger.info(f"CID {cid_value}: Request finished with unrecoverable error or completed with errors. Status: {result['status']}")
-                    return result # リトライしないので結果を返す
+                else:
+                    # Unrecoverable error or no retry needed
+                    self.logger.info(f"CID {cid_value}: Request finished with unrecoverable error or completed with non-retryable errors. Status: {result.get('status')}")
+                    return result # Return the final result
 
-            elif wait_outcome == "complete":
-                 # 正常完了 (エラーが含まれる可能性はあるが、リトライ対象ではない)
-                 self.logger.info(f"CID {cid_value}: Request completed successfully (Attempt {attempt + 1}).")
+            # Should not reach here if wait_outcome is handled correctly
+            else:
+                 self.logger.error(f"CID {cid_value}: Reached unexpected point after wait loop (Outcome: {wait_outcome}).")
+                 result["status"] = "error"
+                 result["errors"].append({"type": "InternalError", "details": {"message": f"Unexpected state after wait loop: {wait_outcome}"}})
                  return result
 
-        # ループが正常に終了した場合 (通常ここには来ないはず)
-        self.logger.error(f"CID {cid_value}: Request loop exited unexpectedly.")
-        return {"status": "error", "data": [], "errors": [{"type": "Unknown", "details": {"message": "Reached end of request loop unexpectedly"}}]}
+
+        # Should not be reachable if loop logic is correct
+        self.logger.error(f"CID {cid_value}: Exited request loop unexpectedly after {max_retries + 1} attempts.")
+        return {"status": "error", "data": [], "errors": [{"type": "Unknown", "details": {"message": f"Exited request loop unexpectedly. Last exception: {last_exception}"}}]}
 
 
-    # --- Excelライクな高レベルメソッド ---
+    # --- Excel-like High-Level Methods ---
 
-    def bdp(self, securities, fields, overrides=None, timeout=None, max_retries=None, retry_delay=None):
+    def bdp(self, securities, fields, overrides=None,
+            timeout=None, max_retries=None, retry_delay=None):
         """
-        ReferenceDataRequest を使って静的データを取得 (ExcelのBDP相当)。
-        :param securities: 証券名のリスト (例: ["IBM US Equity", "MSFT US Equity"])
-        :param fields: フィールド名のリスト (例: ["PX_LAST", "BID", "ASK"])
-        :param overrides: オーバーライド辞書 (例: {"VWAP_START_TIME": "9:30", "VWAP_END_TIME": "16:00"})
-        :return: 結果辞書 {"status": "complete"|"error", "data": [...], "errors": [...]}
-                 data は証券ごとの辞書のリスト: [{"security": "...", "data": {"FIELD": value, ...}, "errors": [...]}, ...]
+        Gets static data using ReferenceDataRequest (like Excel BDP).
+
+        :param securities: List/tuple of security identifiers (e.g., ["IBM US Equity", "MSFT US Equity"]) or a single string.
+        :param fields: List/tuple of field mnemonics (e.g., ["PX_LAST", "BID", "ASK"]) or a single string.
+        :param overrides: Dictionary of overrides (e.g., {"VWAP_START_TIME": "9:30", "VWAP_END_TIME": "16:00"}).
+        :param timeout: Specific timeout for this request.
+        :param max_retries: Specific max retries for this request.
+        :param retry_delay: Specific initial retry delay for this request.
+        :return: Dictionary with status, data, and errors.
+                 'data' is a list of dicts, one per security: [{"security": "...", "data": {"FIELD": value, ...}, "errors": [...]}, ...]
         """
-        self.logger.info(f"Received BDP request for {len(securities)} securities, {len(fields)} fields.")
+        self.logger.info(f"Received BDP request for securities: {securities}, fields: {fields}")
         service_name = "//blp/refdata"
         try:
-            # サービスオブジェクトの取得を試みる (内部でオープンされる)
-            service = self.session.getService(service_name)
-            if not service:
-                 raise ConnectionError(f"Could not get service: {service_name}")
+            # Ensure service object is available (will be opened if needed by send_request)
+            if not self.session: raise ConnectionError("Session not started.")
+            service = self.session.getService(service_name) # Get service obj pre-emptively for request creation
+            if not service: raise ConnectionError(f"Could not get service: {service_name}")
 
             request = service.createRequest("ReferenceDataRequest")
 
-            # 引数をリストで受け付けるように統一
+            # Standardize inputs to lists
             if isinstance(securities, str): securities = [securities]
             if isinstance(fields, str): fields = [fields]
 
+            # Append securities and fields to the request
             for sec in securities:
                 request.append("securities", sec)
             for fld in fields:
                 request.append("fields", fld)
 
+            # Add overrides if provided
             if overrides:
                 override_element = request.getElement("overrides")
                 for key, value in overrides.items():
                     ovrd = override_element.appendElement()
                     ovrd.setElement("fieldId", key)
-                    ovrd.setElement("value", str(value)) # 値は文字列として設定するのが安全
+                    # Ensure value is a string for simplicity, though blpapi might handle types
+                    ovrd.setElement("value", str(value))
 
+            # Send the request using the core send_request method
             return self.send_request(request, service_name, timeout, max_retries, retry_delay)
 
         except Exception as e:
             self.logger.exception(f"Error creating BDP request: {e}")
+            # Return a structured error if request creation fails
             return {"status": "error", "data": [], "errors": [{"type": "RequestCreationError", "details": {"message": str(e)}}]}
 
 
     def bdh(self, securities, fields, start_date, end_date, overrides=None, options=None,
             timeout=None, max_retries=None, retry_delay=None):
         """
-        HistoricalDataRequest を使って時系列データを取得 (ExcelのBDH相当)。
-        :param securities: 証券名のリスト
-        :param fields: フィールド名のリスト
-        :param start_date: 開始日 ("YYYYMMDD" または datetime.date)
-        :param end_date: 終了日 ("YYYYMMDD" または datetime.date)
-        :param overrides: オーバーライド辞書
-        :param options: その他のオプション辞書 (例: {"periodicitySelection": "DAILY", "currency": "USD"})
-        :return: 結果辞書 {"status": "complete"|"error", "data": [...], "errors": [...]}
-                 data は証券ごとの辞書のリスト: [{"security": "...", "data": [{"date": ..., "FIELD": value, ...}, ...], "errors": [...]}, ...]
+        Gets historical time series data using HistoricalDataRequest (like Excel BDH).
+
+        :param securities: List/tuple of security identifiers or a single string.
+        :param fields: List/tuple of field mnemonics or a single string.
+        :param start_date: Start date ("YYYYMMDD" string or datetime.date/datetime object).
+        :param end_date: End date ("YYYYMMDD" string or datetime.date/datetime object).
+        :param overrides: Dictionary of overrides.
+        :param options: Dictionary of other request options (e.g., {"periodicitySelection": "DAILY", "currency": "USD"}).
+        :param timeout: Specific timeout for this request.
+        :param max_retries: Specific max retries for this request.
+        :param retry_delay: Specific initial retry delay for this request.
+        :return: Dictionary with status, data, and errors.
+                 'data' is a list of dicts, one per security: [{"security": "...", "data": [{"date": ..., "FIELD": value, ...}, ...], "errors": [...]}, ...]
         """
-        self.logger.info(f"Received BDH request for {len(securities)} securities, {len(fields)} fields from {start_date} to {end_date}.")
+        self.logger.info(f"Received BDH request for {securities}, fields: {fields}, period: {start_date} to {end_date}")
         service_name = "//blp/refdata"
         try:
+            if not self.session: raise ConnectionError("Session not started.")
             service = self.session.getService(service_name)
-            if not service:
-                 raise ConnectionError(f"Could not get service: {service_name}")
+            if not service: raise ConnectionError(f"Could not get service: {service_name}")
 
             request = service.createRequest("HistoricalDataRequest")
 
@@ -1012,24 +1157,25 @@ class BlpApiWrapper:
             for fld in fields:
                 request.append("fields", fld)
 
-            # 日付形式の統一 (YYYYMMDD)
-            if isinstance(start_date, datetime): start_date = start_date.strftime("%Y%m%d")
-            if isinstance(end_date, datetime): end_date = end_date.strftime("%Y%m%d")
+            # Format dates consistently to "YYYYMMDD"
+            if isinstance(start_date, (datetime, date)): start_date = start_date.strftime("%Y%m%d")
+            if isinstance(end_date, (datetime, date)): end_date = end_date.strftime("%Y%m%d")
             request.set("startDate", start_date)
             request.set("endDate", end_date)
 
-            # その他のオプション設定
+            # Set other options if provided
             if options:
                 for key, value in options.items():
                     try:
                         if request.hasElement(key):
                             request.set(key, value)
                         else:
-                            self.logger.warning(f"BDH: Option '{key}' not found in request schema. Ignoring.")
+                            self.logger.warning(f"BDH: Option '{key}' not found in HistoricalDataRequest schema. Ignoring.")
                     except Exception as e_opt:
+                        # Log error setting option but continue
                         self.logger.warning(f"BDH: Failed to set option '{key}' to '{value}'. Error: {e_opt}")
 
-
+            # Add overrides
             if overrides:
                 override_element = request.getElement("overrides")
                 for key, value in overrides.items():
@@ -1037,8 +1183,8 @@ class BlpApiWrapper:
                     ovrd.setElement("fieldId", key)
                     ovrd.setElement("value", str(value))
 
-            # 時系列データはタイムアウトを長めに設定する (例: デフォルトの2倍)
-            hist_timeout = timeout if timeout is not None else self.default_timeout * 2
+            # Historical requests can take longer, consider a longer default timeout
+            hist_timeout = timeout if timeout is not None else self.default_timeout * 2 # Example: double default
             return self.send_request(request, service_name, hist_timeout, max_retries, retry_delay)
 
         except Exception as e:
@@ -1049,22 +1195,26 @@ class BlpApiWrapper:
     def bds(self, securities, field, overrides=None, options=None,
              timeout=None, max_retries=None, retry_delay=None):
         """
-        ReferenceDataRequest を使ってバルクデータを取得 (ExcelのBDS相当)。
-        特定のフィールドに対する配列データを取得することを想定。
-        :param securities: 証券名のリスト
-        :param field: バルクフィールド名 (文字列、1つだけ)
-        :param overrides: オーバーライド辞書
-        :param options: ReferenceDataRequestの他のオプション (あまり使わないかも)
-        :return: 結果辞書 {"status": "complete"|"error", "data": [...], "errors": [...]}
-                 data は証券ごとの辞書のリスト: [{"security": "...", "data": {"FIELD": [item1, item2, ...]}, "errors": [...]}, ...]
-                 item は単純な値か、ネストした辞書。
+        Gets bulk data using ReferenceDataRequest (like Excel BDS).
+        Intended for fields that return an array of data.
+
+        :param securities: List/tuple of security identifiers or a single string.
+        :param field: The bulk field mnemonic (string, single field only).
+        :param overrides: Dictionary of overrides.
+        :param options: Dictionary of other ReferenceDataRequest options (rarely needed for BDS).
+        :param timeout: Specific timeout for this request.
+        :param max_retries: Specific max retries for this request.
+        :param retry_delay: Specific initial retry delay for this request.
+        :return: Dictionary with status, data, and errors.
+                 'data' is a list of dicts, one per security: [{"security": "...", "data": {"FIELD": [item1, item2, ...]}, "errors": [...]}, ...]
+                 Items in the array can be simple values or nested dictionaries.
         """
-        self.logger.info(f"Received BDS request for {len(securities)} securities, field: {field}.")
+        self.logger.info(f"Received BDS request for {securities}, field: {field}")
         service_name = "//blp/refdata"
         try:
+            if not self.session: raise ConnectionError("Session not started.")
             service = self.session.getService(service_name)
-            if not service:
-                 raise ConnectionError(f"Could not get service: {service_name}")
+            if not service: raise ConnectionError(f"Could not get service: {service_name}")
 
             request = service.createRequest("ReferenceDataRequest")
 
@@ -1074,19 +1224,20 @@ class BlpApiWrapper:
 
             for sec in securities:
                 request.append("securities", sec)
-            request.append("fields", field) # フィールドは1つ
+            request.append("fields", field) # Only one field for BDS
 
-            # その他のオプション設定 (必要であれば)
+            # Set other options if provided (though less common for BDS)
             if options:
                  for key, value in options.items():
                      try:
                          if request.hasElement(key):
                              request.set(key, value)
                          else:
-                              self.logger.warning(f"BDS: Option '{key}' not found in request schema. Ignoring.")
+                              self.logger.warning(f"BDS: Option '{key}' not found in ReferenceDataRequest schema. Ignoring.")
                      except Exception as e_opt:
                          self.logger.warning(f"BDS: Failed to set option '{key}' to '{value}'. Error: {e_opt}")
 
+            # Add overrides
             if overrides:
                 override_element = request.getElement("overrides")
                 for key, value in overrides.items():
@@ -1094,7 +1245,7 @@ class BlpApiWrapper:
                     ovrd.setElement("fieldId", key)
                     ovrd.setElement("value", str(value))
 
-            # BDSもデータ量が多い可能性があるのでタイムアウト長め推奨
+            # BDS can also return large amounts of data, suggest longer timeout
             bds_timeout = timeout if timeout is not None else self.default_timeout * 2
             return self.send_request(request, service_name, bds_timeout, max_retries, retry_delay)
 
@@ -1106,51 +1257,61 @@ class BlpApiWrapper:
     def get_intraday_bar(self, security, event_type, start_dt, end_dt, interval,
                          options=None, timeout=None, max_retries=None, retry_delay=None):
         """
-        IntradayBarRequest を使って分足などを取得。
-        :param security: 証券名 (文字列、1つだけ)
-        :param event_type: イベントタイプ ("TRADE", "BID", "ASK", "BID_BEST", "ASK_BEST", etc.)
-        :param start_dt: 開始日時 (datetimeオブジェクト, timezone-aware推奨)
-        :param end_dt: 終了日時 (datetimeオブジェクト, timezone-aware推奨)
-        :param interval: 間隔（分単位の整数）
-        :param options: その他のオプション辞書 (例: {"gapFillInitialBar": True})
-        :return: 結果辞書 {"status": "complete"|"error", "data": [...], "errors": [...]}
-                 data はバーデータのリスト: [{"time": ..., "open": ..., "high": ..., ...}, ...]
-                 エラーはリストのerrorsに含まれる。Intradayは証券ごとのエラー構造が少し違う。
+        Gets intraday bar data (minute bars, etc.) using IntradayBarRequest.
+
+        :param security: Security identifier (string, single security only for this request type).
+        :param event_type: Event type string ("TRADE", "BID", "ASK", "BID_BEST", "ASK_BEST", etc.).
+        :param start_dt: Start datetime (datetime object, timezone-aware recommended).
+        :param end_dt: End datetime (datetime object, timezone-aware recommended).
+        :param interval: Bar interval in minutes (integer).
+        :param options: Dictionary of other request options (e.g., {"gapFillInitialBar": True}).
+        :param timeout: Specific timeout for this request.
+        :param max_retries: Specific max retries for this request.
+        :param retry_delay: Specific initial retry delay for this request.
+        :return: Dictionary with status, data, and errors.
+                 'data' is a list of bar data dicts: [{"time": ..., "open": ..., "high": ..., ...}, ...]
+                 Errors related to the request are in the main 'errors' list.
         """
         self.logger.info(f"Received IntradayBar request for {security}, Event: {event_type}, Interval: {interval}, Period: {start_dt} to {end_dt}")
-        service_name = "//blp/apidata" # Intradayデータは通常このサービス
+        service_name = "//blp/apidata" # Intraday data typically uses this service
         try:
+            if not self.session: raise ConnectionError("Session not started.")
             service = self.session.getService(service_name)
-            if not service:
-                 raise ConnectionError(f"Could not get service: {service_name}")
+            if not service: raise ConnectionError(f"Could not get service: {service_name}")
 
             request = service.createRequest("IntradayBarRequest")
 
+            # Set mandatory parameters
             request.set("security", security)
             request.set("eventType", event_type)
-            request.set("interval", interval)
+            request.set("interval", interval) # In minutes
 
-            # datetime を blpapi が期待する形式に設定
-            # blpapi.Datetime オブジェクトを使うのが確実
-            blp_start_dt = blpapi.Datetime.from_datetime(start_dt)
-            blp_end_dt = blpapi.Datetime.from_datetime(end_dt)
+            # Convert Python datetime to blpapi.Datetime objects
+            # Using timezone-aware datetimes is highly recommended to avoid ambiguity
+            try:
+                blp_start_dt = blpapi.Datetime.from_datetime(start_dt)
+                blp_end_dt = blpapi.Datetime.from_datetime(end_dt)
+            except Exception as dt_err:
+                 raise ValueError(f"Invalid start or end datetime provided: {dt_err}") from dt_err
+
             request.set("startDateTime", blp_start_dt)
             request.set("endDateTime", blp_end_dt)
 
-            # その他のオプション設定
+            # Set optional parameters
             if options:
                 for key, value in options.items():
                     try:
                         if request.hasElement(key):
+                            # Need to handle type conversions carefully for options
+                            # Example: Booleans might need request.set(key, bool(value))
                             request.set(key, value)
                         else:
                              self.logger.warning(f"IntradayBar: Option '{key}' not found in request schema. Ignoring.")
                     except Exception as e_opt:
                         self.logger.warning(f"IntradayBar: Failed to set option '{key}' to '{value}'. Error: {e_opt}")
 
-
-            # Intradayデータは非常に大きい可能性があるのでタイムアウトを長く設定
-            intra_timeout = timeout if timeout is not None else self.default_timeout * 4
+            # Intraday requests can be very large, use a significantly longer timeout
+            intra_timeout = timeout if timeout is not None else self.default_timeout * 4 # Example: 4x default
             return self.send_request(request, service_name, intra_timeout, max_retries, retry_delay)
 
         except Exception as e:
@@ -1161,206 +1322,279 @@ class BlpApiWrapper:
     def get_intraday_tick(self, security, event_types, start_dt, end_dt,
                           options=None, timeout=None, max_retries=None, retry_delay=None):
         """
-        IntradayTickRequest を使ってティックデータを取得。
-        :param security: 証券名 (文字列、1つだけ)
-        :param event_types: イベントタイプのリスト (例: ["TRADE", "BID", "ASK"])
-        :param start_dt: 開始日時 (datetimeオブジェクト, timezone-aware推奨)
-        :param end_dt: 終了日時 (datetimeオブジェクト, timezone-aware推奨)
-        :param options: その他のオプション辞書 (例: {"includeConditionCodes": True})
-        :return: 結果辞書 {"status": "complete"|"error", "data": [...], "errors": [...]}
-                 data はティックデータのリスト: [{"time": ..., "type": ..., "value": ..., ...}, ...]
+        Gets intraday tick-by-tick data using IntradayTickRequest.
+
+        :param security: Security identifier (string, single security only).
+        :param event_types: List/tuple of event type strings (e.g., ["TRADE", "BID", "ASK"]) or a single string.
+        :param start_dt: Start datetime (datetime object, timezone-aware recommended).
+        :param end_dt: End datetime (datetime object, timezone-aware recommended).
+        :param options: Dictionary of other request options (e.g., {"includeConditionCodes": True}).
+        :param timeout: Specific timeout for this request.
+        :param max_retries: Specific max retries for this request.
+        :param retry_delay: Specific initial retry delay for this request.
+        :return: Dictionary with status, data, and errors.
+                 'data' is a list of tick data dicts: [{"time": ..., "type": ..., "value": ..., ...}, ...]
         """
         self.logger.info(f"Received IntradayTick request for {security}, Events: {event_types}, Period: {start_dt} to {end_dt}")
         service_name = "//blp/apidata"
         try:
+            if not self.session: raise ConnectionError("Session not started.")
             service = self.session.getService(service_name)
-            if not service:
-                 raise ConnectionError(f"Could not get service: {service_name}")
+            if not service: raise ConnectionError(f"Could not get service: {service_name}")
 
             request = service.createRequest("IntradayTickRequest")
 
             request.set("security", security)
 
-            # イベントタイプは配列で設定
+            # Add event types (must be a list/sequence)
             if isinstance(event_types, str): event_types = [event_types]
             for et in event_types:
                 request.append("eventTypes", et)
 
-            blp_start_dt = blpapi.Datetime.from_datetime(start_dt)
-            blp_end_dt = blpapi.Datetime.from_datetime(end_dt)
+            # Convert Python datetime to blpapi.Datetime
+            try:
+                blp_start_dt = blpapi.Datetime.from_datetime(start_dt)
+                blp_end_dt = blpapi.Datetime.from_datetime(end_dt)
+            except Exception as dt_err:
+                 raise ValueError(f"Invalid start or end datetime provided: {dt_err}") from dt_err
+
             request.set("startDateTime", blp_start_dt)
             request.set("endDateTime", blp_end_dt)
 
-            # その他のオプション設定
+            # Set optional parameters
             if options:
                  for key, value in options.items():
                      try:
                          if request.hasElement(key):
-                             request.set(key, value)
+                             # Handle type conversions, e.g., boolean options
+                             if isinstance(value, bool):
+                                 request.set(key, value)
+                             else:
+                                  # Assume string or let blpapi handle conversion
+                                 request.set(key, value)
                          else:
                               self.logger.warning(f"IntradayTick: Option '{key}' not found in request schema. Ignoring.")
                      except Exception as e_opt:
                          self.logger.warning(f"IntradayTick: Failed to set option '{key}' to '{value}'. Error: {e_opt}")
 
-
-            intra_timeout = timeout if timeout is not None else self.default_timeout * 5 # Tickはさらに時間がかかる可能性
+            # Tick data can be extremely large, use a very long timeout
+            intra_timeout = timeout if timeout is not None else self.default_timeout * 6 # Example: 6x default
             return self.send_request(request, service_name, intra_timeout, max_retries, retry_delay)
 
         except Exception as e:
             self.logger.exception(f"Error creating IntradayTick request: {e}")
             return {"status": "error", "data": [], "errors": [{"type": "RequestCreationError", "details": {"message": str(e)}}]}
 
+    # --- Context Manager Implementation ---
     def __enter__(self):
-        """Context Manager: セッションを開始"""
-        if not self.start_session():
+        """Context Manager: Start the session."""
+        if not self.start_session(): # Assumes start_session can handle auth if needed via config/defaults
+            # Clean up if start fails partially? stop_session handles None session.
+            self.stop_session()
             raise RuntimeError("Failed to start Bloomberg session.")
-        return self
+        return self # Return the wrapper instance
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context Manager: セッションを停止"""
+        """Context Manager: Stop the session."""
         self.stop_session()
+        # Do not suppress exceptions, return False or None (default)
 
 
-# --- asyncio との連携 ---
-async def run_blp_request_async(blp_wrapper, request_func, *args, **kwargs):
+# --- asyncio Integration Helper ---
+async def run_blp_request_async(blp_wrapper: BlpApiWrapper, request_func, *args, **kwargs):
     """
-    BlpApiWrapper の同期メソッドを asyncio イベントループから非同期に呼び出すヘルパー関数。
-    Python 3.9+ の asyncio.to_thread を使用。
+    Helper function to run a synchronous BlpApiWrapper method asynchronously
+    from an asyncio event loop using asyncio.to_thread (Python 3.9+).
+
+    :param blp_wrapper: The BlpApiWrapper instance.
+    :param request_func: The synchronous method to call (e.g., blp_wrapper.bdp).
+    :param args: Positional arguments for the request function.
+    :param kwargs: Keyword arguments for the request function.
+    :return: The result dictionary from the request function.
     """
-    loop = asyncio.get_running_loop()
-    # 同期関数 request_func を別スレッドで実行し、結果を await する
+    # Use asyncio.to_thread to run the blocking function in a separate thread
+    # managed by the asyncio event loop's default executor.
+    # This prevents the blocking call from stalling the event loop.
     result = await asyncio.to_thread(request_func, *args, **kwargs)
-    # 低レベルの asyncio.run_in_executor を使う場合:
-    # result = await loop.run_in_executor(None, request_func, *args, **kwargs) # デフォルトのThreadPoolExecutorを使用
+
+    # For Python < 3.9, use loop.run_in_executor:
+    # loop = asyncio.get_running_loop()
+    # result = await loop.run_in_executor(None, request_func, *args, **kwargs) # None uses default ThreadPoolExecutor
+
     return result
 
-# --- 利用例 ---
+# --- Usage Examples ---
 async def main_async_example():
-    """asyncioを使った非同期実行の例"""
-    blp = BlpApiWrapper() # ラッパーインスタンス作成
-    if not blp.start_session(): # セッション開始は同期的に行う
-        print("Failed to start session.")
+    """Example of using the wrapper asynchronously with asyncio."""
+    blp = BlpApiWrapper(config_file='config.ini') # Create wrapper instance
+
+    # Start session synchronously before running async tasks
+    # Or handle session start/stop within the async function if preferred,
+    # but ensure it's done before requests.
+    if not blp.start_session():
+        print("Failed to start session for async example.")
         return
 
     try:
-        # --- 複数のリクエストを非同期に発行 ---
         print("\n--- Sending requests asynchronously using asyncio ---")
 
-        # BDPリクエストのコルーチンを作成
+        # Create coroutine for a BDP request
         bdp_task = run_blp_request_async(
             blp,
-            blp.bdp, # 呼び出すメソッド
-            ["IBM US Equity", "MSFT US Equity", "INVALID SEC"], # securities
-            ["PX_LAST", "SECURITY_NAME_REALTIME"] # fields
+            blp.bdp, # The method to call
+            securities=["IBM US Equity", "MSFT US Equity", "INVALID SEC"],
+            fields=["PX_LAST", "SECURITY_NAME_REALTIME", "RT_EXCH_TRADE_VOL"]
         )
 
-        # BDHリクエストのコルーチンを作成
-        start_date = datetime(2023, 1, 1)
-        end_date = datetime(2023, 1, 5)
+        # Create coroutine for a BDH request
+        from datetime import date, timedelta
+        start_date_h = date.today() - timedelta(days=7)
+        end_date_h = date.today() - timedelta(days=1)
         bdh_task = run_blp_request_async(
             blp,
-            blp.bdh, # 呼び出すメソッド
-            "AAPL US Equity", # securities
-            ["PX_LAST", "VOLUME"], # fields
-            start_date.strftime("%Y%m%d"), # start_date
-            end_date.strftime("%Y%m%d"), # end_date
+            blp.bdh, # The method to call
+            securities="AAPL US Equity",
+            fields=["PX_LAST", "VOLUME"],
+            start_date=start_date_h, # Pass date objects directly
+            end_date=end_date_h,
             options={"periodicitySelection": "DAILY"}
         )
 
-        # 他の非同期タスク (例: 別のDBアクセスラッパー)
-        db_task = asyncio.sleep(1, result="DB result placeholder") # ダミーDBアクセス
+        # --- Simulate another concurrent I/O task (e.g., database query) ---
+        # Replace this with your actual async database call if using an asyncio-compatible driver
+        async def dummy_db_query(duration=1.5):
+            print("Starting dummy DB query...")
+            await asyncio.sleep(duration) # Simulate I/O wait
+            print("Finished dummy DB query.")
+            return {"db_data": "some result from database"}
 
-        # すべてのタスクを並行して実行し、結果を待つ
-        results = await asyncio.gather(bdp_task, bdh_task, db_task)
+        db_task = dummy_db_query()
 
-        # 結果の処理
+        # --- Run all tasks concurrently and wait for results ---
+        print("Gathering async tasks...")
+        # results will be a list containing the return values of the tasks in order
+        results = await asyncio.gather(bdp_task, bdh_task, db_task, return_exceptions=True)
+        print("Async tasks gathered.")
+
+        # Process results (check for exceptions if return_exceptions=True)
         bdp_result_async = results[0]
         bdh_result_async = results[1]
         db_result = results[2]
 
         print("\n--- Async BDP Result ---")
-        print(json.dumps(bdp_result_async, indent=2, default=str)) # datetimeを文字列化
+        if isinstance(bdp_result_async, Exception):
+             print(f"BDP Task failed: {bdp_result_async}")
+        else:
+             # Use default=str to handle datetime objects in json.dumps
+             print(json.dumps(bdp_result_async, indent=2, default=str))
 
         print("\n--- Async BDH Result ---")
-        print(json.dumps(bdh_result_async, indent=2, default=str))
+        if isinstance(bdh_result_async, Exception):
+             print(f"BDH Task failed: {bdh_result_async}")
+        else:
+             print(json.dumps(bdh_result_async, indent=2, default=str))
 
-        print(f"\n--- Other Async Task Result ---")
-        print(db_result)
+        print(f"\n--- Other Async Task (DB) Result ---")
+        if isinstance(db_result, Exception):
+             print(f"DB Task failed: {db_result}")
+        else:
+             print(db_result)
 
     except Exception as e:
         print(f"An error occurred in async example: {e}")
         blp.logger.exception("Error during async execution")
     finally:
-        blp.stop_session() # セッション停止も忘れずに
+        blp.stop_session() # Ensure session is stopped
 
 
 if __name__ == '__main__':
-    # --- 同期的な使い方 ---
+    from datetime import date, timedelta, datetime
+
+    # --- Synchronous Usage Example ---
     print("--- Synchronous Example ---")
     try:
-        # コンテキストマネージャを使ってセッション管理
-        with BlpApiWrapper(config_file='config.ini') as blp:
+        # Use context manager for automatic session start/stop
+        with BlpApiWrapper(config_file='config.ini') as blp: # Creates instance and starts session
 
-            # BDP Example
-            print("\n--- BDP Call ---")
-            bdp_result = blp.bdp(
+            # BDP Example Call
+            print("\n--- BDP Call (Sync) ---")
+            bdp_result_sync = blp.bdp(
                 securities=["NVDA US Equity", "AMD US Equity", "NONEXISTENT"],
                 fields=["PX_LAST", "CHG_PCT_1D", "BEST_EPS"],
-                overrides={"BEST_FPERIOD_OVERRIDE": "1BF"} # 例: 次の決算期
+                overrides={"BEST_FPERIOD_OVERRIDE": "1BF"} # Example: Next fiscal period estimate
             )
-            print("BDP Result:")
-            # datetime オブジェクトは json.dumps でエラーになるので default=str を指定
-            print(json.dumps(bdp_result, indent=2, default=str))
+            print("BDP Sync Result:")
+            # Use default=str for json.dumps to handle potential date/datetime objects
+            print(json.dumps(bdp_result_sync, indent=2, default=str))
 
-            # BDH Example
-            print("\n--- BDH Call ---")
-            bdh_result = blp.bdh(
-                securities="GOOGL UW Equity", # 文字列でもリストでもOK
+            # BDH Example Call
+            print("\n--- BDH Call (Sync) ---")
+            today = date.today()
+            start_dt_h = today - timedelta(days=30)
+            bdh_result_sync = blp.bdh(
+                securities="GOOGL UW Equity", # Single string also works
                 fields=["PX_LAST", "TURNOVER"],
-                start_date="20240101",
-                end_date="20240105",
-                options={"periodicitySelection": "DAILY", "nonTradingDayFillOption": "ALL_CALENDAR_DAYS"}
+                start_date=start_dt_h, # Pass date object
+                end_date=today, # Pass date object
+                options={"periodicitySelection": "WEEKLY", "nonTradingDayFillOption": "ACTIVE_DAYS_ONLY"}
             )
-            print("BDH Result:")
-            print(json.dumps(bdh_result, indent=2, default=str))
+            print("BDH Sync Result:")
+            print(json.dumps(bdh_result_sync, indent=2, default=str))
 
-            # BDS Example
-            print("\n--- BDS Call ---")
-            bds_result = blp.bds(
+            # BDS Example Call
+            print("\n--- BDS Call (Sync) ---")
+            bds_result_sync = blp.bds(
                 securities="INDU Index",
-                field="INDX_MWEIGHT", # 指数構成銘柄ウェイト (バルクフィールド)
-                overrides={"END_DATE_OVERRIDE": "20240131"}
+                field="INDX_MWEIGHT", # Index constituent weights (bulk field)
+                overrides={"END_DATE_OVERRIDE": "20240131"} # Example override
             )
-            print("BDS Result:")
-            print(json.dumps(bds_result, indent=2, default=str))
+            print("BDS Sync Result:")
+            print(json.dumps(bds_result_sync, indent=2, default=str))
 
-            # Intraday Bar Example
-            # print("\n--- Intraday Bar Call ---")
-            # now = datetime.now()
-            # start_dt_bar = now - timedelta(hours=1)
+            # Intraday Bar Example Call (Uncomment to run)
+            # print("\n--- Intraday Bar Call (Sync) ---")
+            # now = datetime.now() # Use timezone-aware datetime if possible!
+            # start_dt_bar = now - timedelta(minutes=60)
             # end_dt_bar = now
-            # intraday_bar_result = blp.get_intraday_bar(
-            #     security="MSFT US Equity",
-            #     event_type="TRADE",
-            #     start_dt=start_dt_bar,
-            #     end_dt=end_dt_bar,
-            #     interval=5 # 5分足
-            # )
-            # print("Intraday Bar Result:")
-            # print(json.dumps(intraday_bar_result, indent=2, default=str))
+            # # Ensure start/end times are within allowed intraday history limits (e.g., ~140 days)
+            # try:
+            #     intraday_bar_result = blp.get_intraday_bar(
+            #         security="MSFT US Equity",
+            #         event_type="TRADE",
+            #         start_dt=start_dt_bar,
+            #         end_dt=end_dt_bar,
+            #         interval=5 # 5-minute bars
+            #     )
+            #     print("Intraday Bar Sync Result:")
+            #     print(json.dumps(intraday_bar_result, indent=2, default=str))
+            # except ValueError as ve:
+            #      print(f"Could not run Intraday Bar example: {ve}")
+
+
+        # Session is automatically stopped here by __exit__
 
     except RuntimeError as e:
-        print(f"Runtime Error: {e}")
+        # Catch session start/stop errors from context manager
+        print(f"Runtime Error (likely session related): {e}")
+    except ConnectionError as e:
+        print(f"Connection Error: {e}")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        logging.getLogger('blpapi_wrapper').exception("Unhandled error in main execution")
+        # Catch other potential errors during synchronous execution
+        print(f"An unexpected error occurred in sync example: {e}")
+        # Log exception if logger was configured
+        logger = logging.getLogger('blpapi_wrapper')
+        if logger.hasHandlers():
+             logger.exception("Unhandled error in main sync execution")
 
 
-    # --- 非同期 (asyncio) の使い方 ---
+    # --- Asynchronous (asyncio) Usage Example ---
     print("\n\n--- Asynchronous Example using asyncio ---")
-    # asyncio イベントループを実行
+    # Run the async main function using asyncio.run()
     try:
-        # Python 3.7+
+        # asyncio.run() creates a new event loop and runs the coroutine until completion
         asyncio.run(main_async_example())
     except Exception as e:
         print(f"Error running asyncio example: {e}")
+        logger = logging.getLogger('blpapi_wrapper')
+        if logger.hasHandlers():
+             logger.exception("Unhandled error in main async execution")
