@@ -174,6 +174,9 @@ class BlpApiWrapper:
         self.default_retry_delay = self.settings['retry_delay']
 
         self.session = None
+        self.session_started_event = threading.Event()
+        self.session_status = "stopped"
+        self.session_status_lock = threading.Lock()
         self.service_states = {} # key: service_name, value: 'opening', 'opened', or 'failed'
         self.service_states_lock = threading.Lock() # Lock for accessing service states dictionary
 
@@ -212,27 +215,26 @@ class BlpApiWrapper:
         session_options.setServerPort(self.port)
         # session_options.setAutoRestartOnDisconnection(True) # Auto-restart option
 
+        with self.session_status_lock:
+            if self.session:
+                self.logger.warning("Session already started or starting.")
+                # Optionally check self.session_status if finer control is needed
+                return self.session_status == "started"
+            self.session_status = "starting" # Mark as starting
+        
         self.logger.info(f"Attempting to connect to {self.host}:{self.port}")
+        self.session_started_event.clear() # Ensure event is clear before starting
         # Create session with the event handler
         self.session = blpapi.Session(session_options, self._event_handler)
-
+    
         if not self.session.start():
-            self.logger.error("Failed to start session.")
+            self.logger.error("Failed to initiate session start sequence (session.start() returned False).")
+            with self.session_status_lock:
+                self.session_status = "failed_to_start"
             self.session = None
             return False
 
-        self.logger.info("Session started successfully. Waiting for SessionStarted event...")
-
-        # Authorization process (if needed)
-        if auth_options:
-            self.logger.info("Attempting authorization...")
-            if not self._authorize(auth_options):
-                self.logger.error("Authorization failed.")
-                self.stop_session() # Stop the session if auth fails
-                return False
-            self.logger.info("Authorization successful.")
-        else:
-            self.logger.info("No authorization required or identity will be obtained later.")
+        self.logger.info("Session start initiated. Starting event loop and waiting for SessionStarted/Failure event...")
 
         # Start the event processing thread
         self.shutdown_event.clear()
@@ -240,12 +242,43 @@ class BlpApiWrapper:
         self.event_thread.daemon = True # Allow program to exit even if this thread is running
         self.event_thread.start()
 
-        # Give a moment for the SessionStarted event to potentially arrive and be logged
-        # A more robust way would involve waiting for a specific state signaled by the event handler
-        time.sleep(0.5)
-
-        self.logger.info("BlpApiWrapper session startup complete.")
-        return True
+        # --- Wait for SessionStarted or SessionStartupFailure ---
+        SESSION_START_TIMEOUT = 15 # seconds
+        event_set = self.session_started_event.wait(timeout=SESSION_START_TIMEOUT)
+    
+        # Check the final status determined by the event handler
+        with self.session_status_lock:
+            final_status = self.session_status
+    
+        if event_set and final_status == "started":
+            self.logger.info("Session confirmed started successfully.")
+            # Authorization step (if needed) should come AFTER session is confirmed started
+            if auth_options:
+                self.logger.info("Attempting authorization...")
+                if not self._authorize(auth_options):
+                    self.logger.error("Authorization failed.")
+                    self.stop_session() # Stop session if auth fails
+                    return False
+                self.logger.info("Authorization successful.")
+            else:
+                self.logger.info("No authorization required or identity will be obtained later.")
+            return True
+        elif final_status == "failed_to_start":
+             # This status would be set if the event handler received SessionStartupFailure
+             self.logger.error("Session startup failed (detected by event handler).")
+             self.stop_session() # Clean up
+             return False
+        elif not event_set:
+            # Timeout occurred
+            self.logger.error(f"Session start timed out after {SESSION_START_TIMEOUT} seconds. Event loop might be stuck or connection failed silently.")
+            # Attempt to stop the session cleanly, although it might be in a bad state
+            self.stop_session()
+            return False
+        else:
+            # Event was set, but status is not "started" (e.g., still "starting" or unexpected)
+            self.logger.error(f"Session start event was set, but final status is unexpected: '{final_status}'.")
+            self.stop_session()
+            return False
 
     def _authorize(self, auth_options):
         """Handles the authorization process."""
