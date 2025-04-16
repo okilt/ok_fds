@@ -840,14 +840,21 @@ class BlpApiWrapper:
 
             if msg_type == SESSION_STARTED:
                 self.logger.info("SessionStarted event processed.")
-                # Potentially signal readiness here if needed
+                with self.session_status_lock:
+                    self.session_status = "started"
+                self.session_started_event.set() # Signal successful start
             elif msg_type == SESSION_STARTUP_FAILURE:
                 self.logger.error(f"SessionStartupFailure event: {msg}")
-                # This is critical, consider stopping the session or attempting restart
-                self.shutdown_event.set() # Signal event loop to stop
+                with self.session_status_lock:
+                    self.session_status = "failed_to_start"
+                self.session_started_event.set() # Signal failure (to unblock wait)
             elif msg_type == SESSION_TERMINATED:
                 self.logger.warning(f"SessionTerminated event received: {msg}")
-                # Session ended unexpectedly. May need reconnect logic.
+                with self.session_status_lock:
+                     self.session_status = "terminated"
+                # Also signal the start event just in case start_session was waiting and the session terminated immediately
+                # Although ideally, it should have failed or started first.
+                self.session_started_event.set()
                 self.shutdown_event.set() # Signal event loop to stop
             elif msg_type == SERVICE_OPENED:
                 if msg.hasElement("serviceName"):
