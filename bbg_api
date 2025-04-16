@@ -1,26 +1,3 @@
-お問い合わせありがとうございます。Bloombergのデータ取得に関する問題ですね。大きなデータリクエストや頻繁なリクエストでデータが返ってこない状況について説明します。
-
-BloombergのPython API（おそらくblpapi）を使用する際に発生する可能性のある主なエラーと対処法について：
-
-### 一般的なエラーパターン
-
-1. **リクエスト制限エラー**：
-   - `ResponseError: Request limit exceeded`
-   - `PermissionDenied`：アクセス制限に関するエラー
-
-2. **接続・タイムアウトエラー**：
-   - `ConnectionError` や `TimeoutError`
-   - `SessionTerminated`：セッションが終了した場合
-
-3. **データ不在エラー**：
-   - `SecurityError: Invalid security [nnnnn]`
-   - `FieldError: Invalid field [nnnnn]`
-
-### データが返ってこない状況への対処法
-
-以下のようなリトライ機能を実装することをお勧めします：
-
-```python
 import blpapi
 import time
 import logging
@@ -135,55 +112,7 @@ def get_bloomberg_data(session, securities, fields, options=None):
         return None
         
     return response_data
-```
 
-### データ存在確認のためのベストプラクティス
-
-1. **段階的なリクエスト**:
-   - 最初に少量のデータでテストリクエスト
-   - 正常に応答があれば完全なデータをリクエスト
-
-2. **エラー処理の差別化**:
-   - 「データ不在」エラーとその他のエラーを区別
-   - データ不在の場合は明示的に結果を記録
-
-3. **応答タイムアウトの設定**:
-   - 適切なタイムアウト値の設定
-   - タイムアウト発生時の明確なエラーハンドリング
-
-大量データリクエストに対しては、バッチ処理やデータの分割取得を検討されることもお勧めします。例えば、日付範囲や証券IDを小さな単位に分割してリクエストする方法が効果的です。
-
-
-これらの方法を組み合わせることで、データが返ってこない場合でも安定したデータ取得処理が可能になります。​​​​​​​​​​​​​​​​
-
-
-おっしゃる通りです。エラーの適切な処理と、「データが存在しない」という情報もキャッシュする方法は非常に効果的です。
-
-### エラー処理の確認ポイント
-
-1. **エラーの握りつぶし確認**:
-   - `try-except` ブロックで例外をキャッチした後、何もせずに処理を続行していないか
-   - `except Exception as e:` のような広範囲の例外捕捉後に適切なログ出力やエラー処理がされているか
-
-2. **エラー情報の詳細記録**:
-   - エラー発生時のパラメータ（リクエストした証券ID、日付範囲、フィールド等）
-   - エラーの種類と詳細なメッセージ
-   - リトライ回数と結果
-
-### エラー種別ごとの推奨対処法
-
-| エラータイプ | 対処法 |
-|------------|--------|
-| `Request limit exceeded` | バックオフ付きリトライ（指数関数的に待機時間を増加） |
-| `PermissionDenied` | 権限確認、APIキー再取得、またはBloomberg管理者に連絡 |
-| `ConnectionError` | セッション再開後にリトライ |
-| `TimeoutError` | リクエストを分割して再試行、バックオフ付きリトライ |
-| `Invalid security/field` | データ不在としてキャッシュ、代替データソース検討 |
-| `SessionTerminated` | セッション再確立後にリトライ |
-
-### データ不在のキャッシュ実装例
-
-```python
 import pickle
 import os
 import time
@@ -320,11 +249,8 @@ def get_bloomberg_data_with_cache(session, securities, fields, options=None, cac
         # 接続エラーやその他のAPIエラーの場合はキャッシュせずに例外を再送出
         logger.error(f"Bloomberg APIエラー: {e}")
         raise
-```
 
 ### 使用例
-
-```python
 # キャッシュ初期化
 cache = BloombergDataCache(cache_dir='./bloomberg_cache', expiry_days=7)
 
@@ -347,13 +273,3 @@ try:
         print("データを取得しました:", len(data), "件")
 except Exception as e:
     print(f"エラーが発生しました: {e}")
-```
-
-このキャッシュ実装の利点：
-
-1. **高速化**: 同じリクエストを繰り返し行う場合に応答時間を大幅に短縮
-2. **リクエスト削減**: Bloomberg APIへのリクエスト回数を削減し、制限回避
-3. **データ不在情報の活用**: 存在しないデータに対する無駄なリクエストを防止
-4. **期限設定**: データの鮮度を確保するための期限切れメカニズム
-
-エラー処理とキャッシュを適切に組み合わせることで、安定性と効率性の両方を向上させることができます。​​​​​​​​​​​​​​​​
