@@ -1164,15 +1164,19 @@ class BlpApiWrapper:
             return {"status": "error", "data": [], "errors": [{"type": "RequestCreationError", "details": {"message": str(e)}}]}
 
 
-    def bdh(self, securities, fields, start_date, end_date, overrides=None, options=None,
-            timeout=None, max_retries=None, retry_delay=None):
+        def bdh(self, securities, fields, start_date=None, end_date=None, date=None,
+            overrides=None, options=None, timeout=None, max_retries=None, retry_delay=None):
         """
         Gets historical time series data using HistoricalDataRequest (like Excel BDH).
 
+        You must provide EITHER the 'date' argument for a single day's data,
+        OR both 'start_date' and 'end_date' for a date range.
+
         :param securities: List/tuple of security identifiers or a single string.
         :param fields: List/tuple of field mnemonics or a single string.
-        :param start_date: Start date ("YYYYMMDD" string or datetime.date/datetime object).
-        :param end_date: End date ("YYYYMMDD" string or datetime.date/datetime object).
+        :param start_date: Start date ("YYYYMMDD" string or datetime.date/datetime object). Required if 'date' is not provided.
+        :param end_date: End date ("YYYYMMDD" string or datetime.date/datetime object). Required if 'date' is not provided.
+        :param date: A single specific date ("YYYYMMDD" string or datetime.date/datetime object) for which data is requested. If provided, 'start_date' and 'end_date' must be None.
         :param overrides: Dictionary of overrides.
         :param options: Dictionary of other request options (e.g., {"periodicitySelection": "DAILY", "currency": "USD"}).
         :param timeout: Specific timeout for this request.
@@ -1181,7 +1185,36 @@ class BlpApiWrapper:
         :return: Dictionary with status, data, and errors.
                  'data' is a list of dicts, one per security: [{"security": "...", "data": [{"date": ..., "FIELD": value, ...}, ...], "errors": [...]}, ...]
         """
-        self.logger.info(f"Received BDH request for {securities}, fields: {fields}, period: {start_date} to {end_date}")
+        # --- Input Validation for Dates ---
+        req_start_date_str = None
+        req_end_date_str = None
+
+        if date is not None:
+            if start_date is not None or end_date is not None:
+                raise ValueError("Cannot provide 'date' along with 'start_date' or 'end_date'. Use 'date' for a single day or 'start_date'/'end_date' for a range.")
+            self.logger.info(f"Received BDH request for single date: {date}")
+            # Format the single date
+            if isinstance(date, (datetime, date)):
+                req_start_date_str = date.strftime("%Y%m%d")
+            else:
+                req_start_date_str = str(date) # Assume YYYYMMDD string
+            req_end_date_str = req_start_date_str # Use the same date for start and end
+        elif start_date is not None and end_date is not None:
+            self.logger.info(f"Received BDH request for date range: {start_date} to {end_date}")
+            # Format the date range
+            if isinstance(start_date, (datetime, date)):
+                req_start_date_str = start_date.strftime("%Y%m%d")
+            else:
+                req_start_date_str = str(start_date)
+            if isinstance(end_date, (datetime, date)):
+                req_end_date_str = end_date.strftime("%Y%m%d")
+            else:
+                req_end_date_str = str(end_date)
+        else:
+            raise ValueError("You must provide either the 'date' argument or both 'start_date' and 'end_date'.")
+        # --- End Input Validation ---
+
+        self.logger.info(f"Processing BDH request for {securities}, fields: {fields}, effective period: {req_start_date_str} to {req_end_date_str}")
         service_name = "//blp/refdata"
         try:
             if not self.session: raise ConnectionError("Session not started.")
@@ -1190,6 +1223,7 @@ class BlpApiWrapper:
 
             request = service.createRequest("HistoricalDataRequest")
 
+            # Standardize securities/fields inputs
             if isinstance(securities, str): securities = [securities]
             if isinstance(fields, str): fields = [fields]
 
@@ -1198,11 +1232,9 @@ class BlpApiWrapper:
             for fld in fields:
                 request.append("fields", fld)
 
-            # Format dates consistently to "YYYYMMDD"
-            if isinstance(start_date, (datetime, date)): start_date = start_date.strftime("%Y%m%d")
-            if isinstance(end_date, (datetime, date)): end_date = end_date.strftime("%Y%m%d")
-            request.set("startDate", start_date)
-            request.set("endDate", end_date)
+            # Set the determined start and end dates
+            request.set("startDate", req_start_date_str)
+            request.set("endDate", req_end_date_str)
 
             # Set other options if provided
             if options:
@@ -1213,7 +1245,6 @@ class BlpApiWrapper:
                         else:
                             self.logger.warning(f"BDH: Option '{key}' not found in HistoricalDataRequest schema. Ignoring.")
                     except Exception as e_opt:
-                        # Log error setting option but continue
                         self.logger.warning(f"BDH: Failed to set option '{key}' to '{value}'. Error: {e_opt}")
 
             # Add overrides
@@ -1225,13 +1256,12 @@ class BlpApiWrapper:
                     ovrd.setElement("value", str(value))
 
             # Historical requests can take longer, consider a longer default timeout
-            hist_timeout = timeout if timeout is not None else self.default_timeout * 2 # Example: double default
+            hist_timeout = timeout if timeout is not None else self.default_timeout * 2
             return self.send_request(request, service_name, hist_timeout, max_retries, retry_delay)
 
         except Exception as e:
-            self.logger.exception(f"Error creating BDH request: {e}")
+            self.logger.exception(f"Error creating/sending BDH request: {e}")
             return {"status": "error", "data": [], "errors": [{"type": "RequestCreationError", "details": {"message": str(e)}}]}
-
 
     def bds(self, securities, field, overrides=None, options=None,
              timeout=None, max_retries=None, retry_delay=None):
