@@ -848,6 +848,7 @@ class BlpApiWrapper:
                 with self.session_status_lock:
                     self.session_status = "failed_to_start"
                 self.session_started_event.set() # Signal failure (to unblock wait)
+                # No need to set shutdown_event here, start_session will call stop_session
             elif msg_type == SESSION_TERMINATED:
                 self.logger.warning(f"SessionTerminated event received: {msg}")
                 with self.session_status_lock:
