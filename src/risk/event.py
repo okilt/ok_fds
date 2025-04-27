@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
 from datetime import date
+from typing import Any, Dict, List
 
 # Assume date_lib exists and has a function like:
 # date_lib.generate_schedule(rule_type: str, start_date: date, end_date: date, **kwargs) -> List[date]
