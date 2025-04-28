@@ -1,173 +1,293 @@
+from typing import Any, List, Coroutine, Callable, Union, Optional, Sequence
 import asyncio
-import logging
-from typing import List, Coroutine, Any, Dict, Tuple, Optional
 from rich.progress import Progress, TaskID
+import logging
+
+# Assume logger 'log' is already configured
+log = logging.getLogger("rich_progress_wrapper")
+
+async def run_with_progress(
+    work: Union[Coroutine, Callable[[], Any], Sequence[Union[Coroutine, Callable[[], Any]]]],
+    description: str,
+    progress: Progress,
+    total: Optional[int] = None, # Explicit total needed if work is not a sequence or is an iterator
+    return_exceptions: bool = False # Similar to asyncio.gather
+) -> Any:
+    """
+    Runs async or blocking work with rich progress reporting.
+
+    Handles:
+        - A single awaitable (Coroutine).
+        - A single blocking function (runs in asyncio.to_thread).
+        - A sequence (e.g., list) of awaitables or blocking functions
+          (runs concurrently, updates progress incrementally like as_completed,
+           returns results like gather).
+
+    Args:
+        work: The work to perform. Can be a coroutine, a blocking function,
+              or a sequence of coroutines/blocking functions.
+        description: Text description for the progress bar task.
+        progress: The rich.progress.Progress object to use.
+        total: The total number of items (required if 'work' is a sequence
+               and needed for accurate MofN/Bar columns). If 'work' is a
+               sequence and total is None, it defaults to len(work).
+        return_exceptions: If True and 'work' is a sequence, exceptions
+                           are returned in the result list instead of being
+                           raised. If False (default), the first exception
+                           encountered during concurrent execution is raised.
+
+    Returns:
+        - The result of the single coroutine or function.
+        - A list containing results (and potentially exceptions if
+          return_exceptions=True) in the original order if 'work' was a sequence.
+
+    Raises:
+        Exception: If return_exceptions is False and an exception occurs
+                   during concurrent execution of a sequence, the first
+                   exception is raised. Also raises TypeError for invalid 'work' input.
+    """
+    task_id: Optional[TaskID] = None # Initialize task_id
+
+    # --- Helper to safely add/start task ---
+    def _add_and_start_task(desc: str, task_total: Optional[float]):
+        nonlocal task_id
+        try:
+            task_id = progress.add_task(desc, total=task_total, start=False, visible=True)
+            progress.start_task(task_id)
+            return task_id
+        except Exception as e:
+            log.error(f"Failed to add/start progress task '{desc}': {e}")
+            return None # Indicate failure
+
+    # --- Helper to update task description safely ---
+    def _update_description(new_description: str):
+        if task_id is not None:
+            try:
+                progress.update(task_id, description=new_description)
+            except Exception as e:
+                log.warning(f"Failed to update progress description for task {task_id}: {e}")
+
+    # --- Helper to stop task safely ---
+    def _stop_task():
+         if task_id is not None:
+            try:
+                progress.stop_task(task_id)
+            except Exception as e:
+                 log.warning(f"Failed to stop progress task {task_id}: {e}")
+
+
+    # --- Handle Sequence (gather/as_completed like behavior) ---
+    if isinstance(work, Sequence) and not isinstance(work, (str, bytes)):
+        if total is None:
+            total = len(work)
+        if total == 0:
+            log.info(f"'{description}': No tasks to run.")
+            return [] # Return empty list for empty sequence
+
+        task_id = _add_and_start_task(f"{description} (0/{total})", total)
+        if task_id is None: return [] # Failed to add task
+
+        results = [None] * total
+        exceptions = []
+        completed_count = 0
+        futures = []
+        original_indices = {} # Map future back to original index
+
+        # Create asyncio Tasks for concurrent execution
+        for i, item in enumerate(work):
+            future: asyncio.Future
+            if asyncio.iscoroutine(item):
+                future = asyncio.create_task(item)
+            elif callable(item) and not asyncio.iscoroutinefunction(item):
+                # Wrap blocking function call in to_thread
+                future = asyncio.create_task(asyncio.to_thread(item), name=f"{description}_item_{i}")
+            else:
+                _update_description(f"[red]✗ {description} (Invalid item at index {i})")
+                _stop_task()
+                raise TypeError(f"Item at index {i} in 'work' sequence is not an awaitable or callable: {type(item)}")
+
+            original_indices[future] = i
+            futures.append(future)
+
+        # Process tasks as they complete to update progress
+        first_exception = None
+        for future in asyncio.as_completed(futures):
+            original_index = original_indices[future]
+            try:
+                result = await future
+                results[original_index] = result
+            except Exception as e:
+                exceptions.append(e)
+                results[original_index] = e # Store exception if return_exceptions=True
+                if not return_exceptions and first_exception is None:
+                    first_exception = e # Store the first exception to potentially re-raise
+                log.debug(f"Task item {original_index} in '{description}' failed: {e}")
+            finally:
+                completed_count += 1
+                # Update progress description and bar
+                current_desc = f"{description} ({completed_count}/{total})"
+                if exceptions:
+                     current_desc += f" - {len(exceptions)} errors!"
+
+                if task_id is not None: # Check if task was added successfully
+                    try:
+                        progress.update(task_id, completed=completed_count, description=current_desc)
+                    except Exception as e:
+                         log.warning(f"Failed to update progress bar for task {task_id}: {e}")
+
+
+        # Final status update
+        if exceptions:
+             final_desc = f"[red]✗ {description} ({len(exceptions)} errors, {total - len(exceptions)}/{total} success)"
+        else:
+             final_desc = f"[green]✓ {description} ({completed_count}/{total} success)"
+        _update_description(final_desc)
+        _stop_task()
+
+        # Handle exceptions based on return_exceptions flag
+        if not return_exceptions and first_exception:
+            raise first_exception
+        else:
+            return results # Return list of results (may contain exceptions)
+
+    # --- Handle Single Coroutine ---
+    elif asyncio.iscoroutine(work):
+        task_id = _add_and_start_task(description, total=1.0) # Use float total for single indeterminate bar
+        if task_id is None: return None
+        try:
+            result = await work
+            _update_description(f"[green]✓ {description}")
+            progress.update(task_id, completed=1.0) # Mark as complete
+            return result
+        except Exception as e:
+            _update_description(f"[red]✗ {description} (Error)")
+            progress.update(task_id, completed=1.0) # Still mark as "finished" in terms of progress
+            raise e # Re-raise the exception
+        finally:
+            _stop_task()
+
+
+    # --- Handle Single Blocking Callable ---
+    elif callable(work) and not asyncio.iscoroutinefunction(work):
+        task_id = _add_and_start_task(description, total=1.0)
+        if task_id is None: return None
+        try:
+            result = await asyncio.to_thread(work)
+            _update_description(f"[green]✓ {description}")
+            progress.update(task_id, completed=1.0)
+            return result
+        except Exception as e:
+            _update_description(f"[red]✗ {description} (Error)")
+            progress.update(task_id, completed=1.0)
+            raise e
+        finally:
+            _stop_task()
+
+    # --- Handle Invalid Input ---
+    else:
+        raise TypeError(f"Unsupported type for 'work' parameter: {type(work)}")
+
+
+# --- Example Usage ---
+
+import time
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
 from rich.logging import RichHandler
 from rich.console import Console
 
-# --- ロギング設定 ---
-# (他のコードと干渉しないように、標準的な設定をここに含めます)
+# --- Logging Settings (stderr) ---
 log_console = Console(stderr=True)
-logging.basicConfig(
-    level="INFO", format="%(message)s", datefmt="[%X]",
-    handlers=[RichHandler(console=log_console, show_path=False, markup=True)]
-)
-log = logging.getLogger("progress_wrapper")
+logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]",
+                    handlers=[RichHandler(console=log_console, show_path=False, markup=True)])
+log = logging.getLogger("wrapper_user")
 
-# --- "最高のラッパー" 関数 ---
 
-async def run_tasks_with_progress(
-    group_definitions: Dict[str, List[Coroutine]],
-    progress: Progress,
-    return_exceptions: bool = False,
-) -> Dict[str, List[Any]]:
-    """
-    複数のタスクグループを並行実行し、rich.progressでグループごとの進捗を表示する汎用ラッパー。
+# --- Original Task Functions (unchanged) ---
+async def async_task(id, delay):
+    await asyncio.sleep(delay)
+    if id == 3: raise ValueError("Simulated error in async task 3")
+    return f"Async Result {id}"
 
-    Args:
-        group_definitions: グループ名をキー、そのグループで実行するコルーチンオブジェクトのリストを値とする辞書。
-                           例: {"Group A": [task1(), task2()], "Group B": [task3()]}
-        progress: rich.progress.Progress オブジェクトのインスタンス。
-        return_exceptions: asyncio.gatherに渡すパラメータ。Trueの場合、例外も結果リストに含まれる。
+def blocking_task(id, delay):
+    time.sleep(delay)
+    if id == 1: raise ValueError("Simulated error in blocking task 1")
+    return f"Blocking Result {id}"
 
-    Returns:
-        グループ名をキー、そのグループのタスク結果（または例外）のリストを値とする辞書。
-    """
-
-    group_results: Dict[str, List[Any]] = {name: [] for name in group_definitions}
-    wrapper_tasks: List[Coroutine] = []
-
-    # --- 内部ヘルパー: 1つのグループを処理し、プログレスを更新 ---
-    async def _process_single_group(
-        group_name: str,
-        tasks_in_group: List[Coroutine],
-        group_task_id: TaskID
-    ):
-        num_tasks = len(tasks_in_group)
-        completed_count = 0
-        error_occurred = False
-        group_specific_results = []
-
-        # 開始時にプログレスバーの状態を更新
-        progress.update(group_task_id, description=f"{group_name} ([yellow]処理中[/])... 0/{num_tasks}", total=num_tasks, completed=0)
-        progress.start_task(group_task_id)
-
-        # as_completed でグループ内のタスクを実行し、完了ごとに更新
-        for future in asyncio.as_completed(tasks_in_group):
-            try:
-                result = await future
-                group_specific_results.append(result)
-                completed_count += 1
-                # 正常完了時のプログレス更新
-                progress.update(group_task_id, completed=completed_count,
-                                description=f"{group_name} ([yellow]処理中[/])... {completed_count}/{num_tasks}")
-            except Exception as e:
-                error_occurred = True
-                log.error(f"タスクグループ '{group_name}' 内でエラー: {e}", exc_info=False) # exc_info=Trueで詳細表示
-                # 例外が発生した場合も結果リストに追加 (return_exceptions=Trueと同様の動作)
-                group_specific_results.append(e)
-                completed_count += 1 # エラーでも試行済みとしてカウント
-                # エラー発生時のプログレス更新
-                progress.update(group_task_id, completed=completed_count,
-                                description=f"{group_name} ([red]エラー発生中[/])... {completed_count}/{num_tasks}")
-
-        # グループ全体の処理完了後の最終状態更新
-        if error_occurred:
-            final_description = f"[bold red]✗ {group_name} (エラーあり)"
-        else:
-            final_description = f"[green]✓ {group_name} (完了)"
-
-        progress.update(group_task_id, description=final_description)
-        progress.stop_task(group_task_id) # スピナーを停止
-
-        # このグループの結果をメインの辞書に格納
-        group_results[group_name] = group_specific_results
-        # このヘルパー関数自体の戻り値は使わないが、完了を示すために返す
-        return f"{group_name} processed"
-
-    # --- メインロジック ---
-    # 1. 各グループに対応するプログレスバータスクを作成
-    group_task_ids: Dict[str, TaskID] = {}
-    for name, tasks in group_definitions.items():
-        if tasks: # タスクリストが空でないグループのみ追加
-            group_task_ids[name] = progress.add_task(f"{name} (待機中...)", total=len(tasks), start=False)
-        else:
-            log.warning(f"タスクグループ '{name}' には実行するタスクがありません。スキップします。")
-
-    # 2. 各グループを処理するラッパーコルーチンを作成
-    for name, tasks in group_definitions.items():
-        if name in group_task_ids: # タスクIDが作成されたグループのみ
-            task_id = group_task_ids[name]
-            wrapper_tasks.append(
-                _process_single_group(name, tasks, task_id)
-            )
-
-    # 3. 全てのグループ処理ラッパーを並行実行
-    if wrapper_tasks:
-        log.info(f"{len(wrapper_tasks)}個のタスクグループの処理を開始します...")
-        # gather 自体のエラーハンドリングはここでは行わない (呼び出し元で行うか、必要なら追加)
-        # return_exceptions は _process_single_group 内で模倣しているので False でも良い
-        await asyncio.gather(*wrapper_tasks, return_exceptions=return_exceptions)
-        log.info("全てのタスクグループの処理が完了しました。")
-    else:
-        log.info("実行するタスクグループがありませんでした。")
-
-    return group_results
-
-# --- 使用例 ---
-
-# 1. 元の非同期処理関数 (変更不要)
-async def original_task_logic(group: str, item_id: int, fail_rate: float = 0.1):
-    """プログレスバーについて何も知らない、元の処理ロジック"""
-    duration = 0.2 + random.random() * 0.8
-    log.debug(f"[{group}-{item_id}] 実行開始 ({duration:.2f}s)")
-    await asyncio.sleep(duration)
-    if random.random() < fail_rate:
-        raise ValueError(f"'{group}-{item_id}'で意図的なエラー発生")
-    log.debug(f"[{group}-{item_id}] 実行完了")
-    return f"{group}-{item_id} Result"
-
-# 2. メインの実行部分
+# --- Main Orchestration using the Wrapper ---
 async def main():
-    from rich.progress import (SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn,
-                               TimeElapsedColumn, TimeRemainingColumn)
-
-    # プログレスバーのカラム設定
+    # --- プログレスバー設定 ---
     progress_columns = [
         SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-        BarColumn(), MofNCompleteColumn(), TimeElapsedColumn(), TimeRemainingColumn()
+        BarColumn(), MofNCompleteColumn(), TimeElapsedColumn()
     ]
 
-    # --- 元のコードを準備 ---
-    # グループ名と、そのグループで実行したい元のコルーチンのリストを定義
-    groups: Dict[str, List[Coroutine]] = {
-        "データロード": [original_task_logic("Load", i, 0.05) for i in range(8)],
-        "前処理": [original_task_logic("Preproc", i, 0.1) for i in range(12)],
-        "モデル予測": [original_task_logic("Predict", i, 0.02) for i in range(5)],
-        "後処理": [original_task_logic("Postproc", i, 0.15) for i in range(10)],
-        "空のグループ": [], # 空のグループのテスト
-    }
-
-    # --- ラッパー関数を呼び出す ---
-    # Progressオブジェクトを作成してラッパーに渡す
     async with Progress(*progress_columns, transient=False) as progress:
-        all_results = await run_tasks_with_progress(groups, progress)
 
-    # --- 結果の確認 ---
-    log.info("--- 実行結果 ---")
-    for group_name, results in all_results.items():
-        success_count = sum(1 for r in results if not isinstance(r, Exception))
-        error_count = len(results) - success_count
-        log.info(f"グループ '{group_name}': 成功 {success_count}件, 失敗 {error_count}件")
-        # 必要なら個別の結果やエラーを表示
-        # for i, res in enumerate(results):
-        #     if isinstance(res, Exception):
-        #         log.warning(f"  - Task {i} failed: {res}")
-        #     else:
-        #         log.info(f"  - Task {i} success: {res}")
+        # --- Example 1: Running a list like gather ---
+        log.info("Example 1: Running list like gather (errors included in result)")
+        tasks_for_gather = [
+            async_task(1, 0.8),
+            async_task(2, 0.3),
+            async_task(3, 0.5), # This one will raise ValueError
+            lambda: blocking_task(0, 0.6), # Blocking task
+            lambda: blocking_task(1, 0.4), # This one will raise ValueError
+        ]
+        gather_results = await run_with_progress(
+            tasks_for_gather,
+            "Processing Batch A (gather-like)",
+            progress,
+            return_exceptions=True # Get exceptions in the list
+        )
+        log.info(f"Batch A Results (incl. exceptions): {gather_results}")
+        print("-" * 20)
+
+        # --- Example 2: Running a list like gather (raising first error) ---
+        log.info("Example 2: Running list like gather (raising first error)")
+        tasks_raise_error = [
+             async_task(10, 0.2),
+             lambda: blocking_task(10, 0.5),
+             async_task(11, 0.1), # Might not run if error happens before
+             async_task(3, 0.3),  # The one that errors
+        ]
+        try:
+             await run_with_progress(
+                 tasks_raise_error,
+                 "Processing Batch B (raise error)",
+                 progress,
+                 return_exceptions=False # Default
+             )
+        except Exception as e:
+             log.error(f"Batch B failed as expected: {type(e).__name__}: {e}")
+        print("-" * 20)
+
+        # --- Example 3: Running a single async task ---
+        log.info("Example 3: Running single async task")
+        single_async_result = await run_with_progress(
+            async_task(99, 0.7),
+            "Running Single Async",
+            progress
+        )
+        log.info(f"Single Async Result: {single_async_result}")
+        print("-" * 20)
+
+        # --- Example 4: Running a single blocking task ---
+        log.info("Example 4: Running single blocking task")
+        single_blocking_result = await run_with_progress(
+            lambda: blocking_task(55, 0.6), # Use lambda to pass args
+            "Running Single Blocking",
+            progress
+        )
+        log.info(f"Single Blocking Result: {single_blocking_result}")
+        print("-" * 20)
+
+        # Example 5: Empty list
+        log.info("Example 5: Running empty list")
+        empty_results = await run_with_progress([], "Processing Empty Batch", progress)
+        log.info(f"Empty Batch Results: {empty_results}")
 
 
+    log.info("Main function finished.")
+
+# --- Execute ---
 if __name__ == "__main__":
-    # ログレベルをDEBUGに変更して詳細を確認する場合
-    # logging.getLogger("progress_wrapper").setLevel(logging.DEBUG)
     asyncio.run(main())
