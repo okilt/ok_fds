@@ -1,35 +1,84 @@
-from typing import Any, List, Coroutine, Union, Optional, Sequence, Dict # Added Dict
 import asyncio
-from rich.progress import Progress, TaskID
+from rich.progress import Progress
+from types import TracebackType  # For type hinting __aexit__
+from typing import Optional, Type, Any # Added Any for __init__ args
 import logging
 
-log = logging.getLogger("coroutine_wrapper_manual_start") # Logger instance
+log = logging.getLogger("progress_context_wrapper")
 
-async def run_coroutines_with_progress_manual( # Renamed slightly for clarity
+class AsyncProgressContext:
+    """
+    An asynchronous context manager wrapper for rich.progress.Progress.
+    Handles manual start() and stop() for use with 'async with'.
+    """
+    def __init__(self, *args: Any, **kwargs: Any):
+        """
+        Initializes the underlying Progress object.
+        Accepts the same arguments as rich.progress.Progress.
+        """
+        # Create the actual Progress instance internally
+        self._progress = Progress(*args, **kwargs)
+        self._started = False # Track if start was called successfully
+        log.debug(f"AsyncProgressContext created. Internal Progress ID: {id(self._progress)}")
+
+    async def __aenter__(self) -> Progress:
+        """Starts the underlying Progress display when entering the context."""
+        log.debug(f"Entering AsyncProgressContext.__aenter__ for Progress ID: {id(self._progress)}")
+        try:
+            # Start the progress display (idempotent in recent rich versions)
+            # Await might not strictly be needed if start() is sync, but safe.
+            await self._progress.start()
+            self._started = True
+            log.debug(f"Internal Progress {id(self._progress)} started.")
+            # Return the underlying Progress object so it can be used with 'as'
+            return self._progress
+        except Exception as e:
+            log.error(f"Error starting Progress {id(self._progress)} in __aenter__: {e}", exc_info=True)
+            # Re-raise to prevent entering the 'with' block in a bad state
+            raise
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> Optional[bool]:
+        """Stops the underlying Progress display when exiting the context."""
+        log.debug(f"Entering AsyncProgressContext.__aexit__ for Progress ID: {id(self._progress)}")
+        # Stop the progress display only if it was successfully started
+        if self._started:
+            try:
+                # Await might not strictly be needed if stop() is sync, but safe.
+                await self._progress.stop()
+                log.debug(f"Internal Progress {id(self._progress)} stopped.")
+            except Exception as e:
+                 log.error(f"Error stopping Progress {id(self._progress)} in __aexit__: {e}", exc_info=True)
+                 # Decide if we should suppress the original exception (if any)
+                 # Typically return False or None to let the original exception propagate
+                 return False # Do not suppress exception
+        # Return False or None to indicate exceptions (if any) should be propagated
+        return False
+
+
+from typing import Sequence, Dict # Added Dict
+
+# Previous definition of run_coroutines_with_progress
+async def run_coroutines_with_progress(
     coroutines: Sequence[Coroutine],
     description: str,
-    progress: Progress,                # Expects an already started Progress object
+    progress: Progress, # Expects an already started Progress object
     return_exceptions: bool = False
 ) -> List[Any]:
     """
     Runs a sequence of coroutines concurrently, updating a provided (and
     already started) rich.progress.Progress object. Handles task creation
-    internally. The caller is responsible for starting/stopping the Progress object.
+    internally. The caller is responsible for starting/stopping the Progress object
+    (or using a context manager like AsyncProgressContext).
 
-    Args:
-        coroutines: The sequence of awaitable coroutine objects to run.
-        description: Text description for the progress bar task line.
-        progress: The rich.progress.Progress object (assumed to be started).
-        return_exceptions: If True, exceptions are returned in the result list.
-                           If False (default), the first exception is raised.
-
-    Returns:
-        A list containing results (and potentially exceptions if
-        return_exceptions=True) in the original order.
-
-    Raises:
-        Exception: If return_exceptions is False and an exception occurs.
-        TypeError: If any item in 'coroutines' is not awaitable.
+    (Implementation details omitted for brevity - see previous answers
+     for the full code of this function. It adds a task line, creates tasks
+     internally, uses as_completed, updates the task line, finalizes the
+     description, and returns results/exceptions).
     """
     num_tasks = len(coroutines)
     if num_tasks == 0:
@@ -45,13 +94,8 @@ async def run_coroutines_with_progress_manual( # Renamed slightly for clarity
     first_exception = None
 
     # --- Step 1: Add the task line to the progress bar ---
-    # We add the task, but DO NOT call progress.start_task() here,
-    # as the overall progress display is managed externally.
     try:
-        # Set initial description, total, but leave it 'stopped' initially
         task_id = progress.add_task(f"{description} (0/{num_tasks})", total=num_tasks, start=False, visible=True)
-        # We might want to immediately update description to 'Running...' if needed
-        # progress.update(task_id, description=f"{description} (Running 0/{num_tasks})")
     except Exception as e:
         log.error(f"Failed to add progress task '{description}': {e}")
         return [] # Cannot proceed
@@ -59,12 +103,8 @@ async def run_coroutines_with_progress_manual( # Renamed slightly for clarity
     # --- Step 2: Create asyncio Tasks Internally ---
     for i, coro in enumerate(coroutines):
         if not asyncio.iscoroutine(coro):
-            # Clean up the added task line before raising error
             if task_id is not None:
                 progress.update(task_id, description=f"[red]✗ {description} (Error: Invalid input)")
-                # We don't stop the task here as stop is managed externally
-                # but we might want to mark it completed if the bar should fill
-                # progress.update(task_id, completed=num_tasks)
             raise TypeError(f"Item at index {i} is not a coroutine: {type(coro)}")
         task = asyncio.create_task(coro, name=f"{description}_item_{i}")
         task_futures.append(task)
@@ -89,14 +129,12 @@ async def run_coroutines_with_progress_manual( # Renamed slightly for clarity
             if exceptions_caught:
                  current_desc += f" - {len(exceptions_caught)} errors!"
             try:
-                 # Only update the specific task line's progress and description
                  if task_id is not None:
                      progress.update(task_id, completed=completed_count, description=current_desc)
             except Exception as e:
                  log.warning(f"Failed to update progress bar for task {task_id}: {e}")
 
     # --- Step 5: Finalize Progress Bar Line Description ---
-    # Update the description one last time, but DO NOT call progress.stop_task()
     final_desc = ""
     if exceptions_caught:
          final_desc = f"[red]✗ {description} ({len(exceptions_caught)} errors, {num_tasks - len(exceptions_caught)}/{num_tasks} success)"
@@ -105,8 +143,9 @@ async def run_coroutines_with_progress_manual( # Renamed slightly for clarity
 
     try:
         if task_id is not None:
-            # Ensure the bar fills completely upon finishing, even if description is set
             progress.update(task_id, description=final_desc, completed=num_tasks)
+            # We don't stop the individual task line here, just update it
+            # progress.stop_task(task_id) # Optional: stop the spinner on this line
     except Exception as e:
         log.warning(f"Failed to finalize progress bar description for task {task_id}: {e}")
 
@@ -116,10 +155,9 @@ async def run_coroutines_with_progress_manual( # Renamed slightly for clarity
     else:
         return results
 
-import asyncio
-import random
-import logging
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
+
+import random # Make sure random is imported
+from rich.progress import SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -127,9 +165,10 @@ from rich.console import Console
 log_console = Console(stderr=True)
 logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]",
                     handlers=[RichHandler(console=log_console, show_path=False, markup=True)])
-log = logging.getLogger("manual_wrapper_user")
+log = logging.getLogger("wrapper_context_user")
 
-# --- Original Task Function (unchanged) ---
+
+# --- Original Task Function (Example) ---
 async def async_task(id, delay):
     log.debug(f"Task {id} starting (sleep {delay:.2f}s)")
     await asyncio.sleep(delay)
@@ -137,59 +176,58 @@ async def async_task(id, delay):
     log.debug(f"Task {id} finished")
     return f"Async Result {id}"
 
-# --- Main Orchestration using the Wrapper ---
-async def main_manual_wrapper():
-    # --- Progress Bar Setup ---
+
+# --- Main Orchestration using the AsyncProgressContext Wrapper ---
+async def main_with_context_wrapper():
+    # --- Progress Bar Columns (defined once) ---
     progress_columns = [
         SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
         BarColumn(), MofNCompleteColumn(), TimeElapsedColumn()
     ]
-    # Create Progress instance BUT DO NOT USE async with
-    progress = Progress(*progress_columns, transient=False)
 
     # --- Create lists of COROUTINES ---
     log.info("Preparing coroutines...")
     coroutines_group_a = [async_task(f"A-{i}", random.random() * 0.6) for i in range(5)]
     coroutines_group_b = [async_task(f"B-{i}", random.random() * 0.8) for i in range(7)]
 
-    # --- Manual Start/Stop Block ---
-    await progress.start() # Start the progress display
-    log.info("Progress started manually.")
-    wrapper_results = []
-    try:
-        # --- Call the wrapper with the started progress object ---
-        log.info("Launching wrappers concurrently...")
+    # --- Use async with on the custom context wrapper ---
+    log.info("Entering async context with AsyncProgressContext...")
+    # Pass the column definitions etc. to the wrapper's constructor
+    async with AsyncProgressContext(*progress_columns, transient=False) as progress:
+        # 'progress' here is the actual rich.progress.Progress instance,
+        # started by AsyncProgressContext.__aenter__
+        log.info(f"Inside async context. Using Progress object ID: {id(progress)}")
+
+        log.info("Launching concurrent group processing...")
         wrapper_results = await asyncio.gather(
-            run_coroutines_with_progress_manual( # Use the updated wrapper name
+            run_coroutines_with_progress( # Use the version taking coroutines
                 coroutines_group_a, "Processing Group A", progress, return_exceptions=True
             ),
-            run_coroutines_with_progress_manual(
+            run_coroutines_with_progress(
                 coroutines_group_b, "Processing Group B", progress, return_exceptions=True
             ),
-            return_exceptions=True
+            return_exceptions=True # For gather itself
         )
-        log.info("All wrapper calls finished within try block.")
+        log.info("Concurrent group processing finished within async context.")
 
-    except Exception as e:
-        log.error(f"An error occurred outside the wrappers: {e}", exc_info=True)
-    finally:
-        await progress.stop() # ★★★ Ensure progress is stopped ★★★
-        log.info("Progress stopped manually.")
+    # --- Exited async context, progress.stop() was called by __aexit__ ---
+    log.info("Exited async context.")
 
     # --- Process results ---
     log.info("Processing results...")
-    # (Result processing logic remains the same as before)
     for i, group_result_or_exc in enumerate(wrapper_results):
         group_name = f"Group {'A' if i == 0 else 'B'}"
         if isinstance(group_result_or_exc, Exception):
-             log.error(f"{group_name} wrapper itself failed: {group_result_or_exc}")
+            log.error(f"{group_name} wrapper itself failed: {group_result_or_exc}")
         else:
             log.info(f"Results for {group_name}:")
             exceptions_in_group = []
             for item in group_result_or_exc:
                 if isinstance(item, Exception):
-                     exceptions_in_group.append(item)
-                     log.warning(f"  - Task Error: {item}")
+                    exceptions_in_group.append(item)
+                    log.warning(f"  - Task Error: {item}")
+                # else:
+                #     log.info(f"  - Success: {item}")
             if exceptions_in_group:
                 log.warning(f"  ({len(exceptions_in_group)} errors detected in group)")
             else:
@@ -197,6 +235,7 @@ async def main_manual_wrapper():
 
     log.info("Main function finished.")
 
+
 # --- Run ---
 if __name__ == "__main__":
-    asyncio.run(main_manual_wrapper())
+    asyncio.run(main_with_context_wrapper())
