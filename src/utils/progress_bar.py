@@ -106,3 +106,87 @@ async def run_coroutines_with_progress(
         raise first_exception
     else:
         return results
+
+import asyncio
+import random
+import logging
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeElapsedColumn
+from rich.logging import RichHandler
+from rich.console import Console
+
+# --- Logger Setup (stderr recommended) ---
+log_console = Console(stderr=True)
+logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]",
+                    handlers=[RichHandler(console=log_console, show_path=False, markup=True)])
+log = logging.getLogger("coroutine_wrapper_user")
+
+# --- Original Task Function (unchanged) ---
+async def async_task(id, delay):
+    log.debug(f"Task {id} starting (sleep {delay:.2f}s)")
+    await asyncio.sleep(delay)
+    if id == 'A-2': raise ValueError(f"Error in async {id}")
+    log.debug(f"Task {id} finished")
+    return f"Async Result {id}"
+
+# --- Main Orchestration using the Wrapper ---
+async def main_simple_wrapper():
+    # --- Progress Bar Setup ---
+    progress_columns = [
+        SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+        BarColumn(), MofNCompleteColumn(), TimeElapsedColumn()
+    ]
+
+    async with Progress(*progress_columns, transient=False) as progress:
+
+        # --- Create lists of COROUTINES (not Tasks) ---
+        log.info("Preparing coroutines...")
+        coroutines_group_a = [
+            async_task(f"A-{i}", random.random() * 0.6)
+            for i in range(5) # A-2 will raise error
+        ]
+        coroutines_group_b = [
+            async_task(f"B-{i}", random.random() * 0.8)
+            for i in range(7)
+        ]
+
+        # --- Call the wrapper with the coroutine lists ---
+        # Run them concurrently using asyncio.gather on the wrapper calls
+        log.info("Launching wrappers concurrently...")
+        wrapper_results = await asyncio.gather(
+            run_coroutines_with_progress(
+                coroutines_group_a, "Processing Group A", progress, return_exceptions=True
+            ),
+            run_coroutines_with_progress(
+                coroutines_group_b, "Processing Group B", progress, return_exceptions=True # Set to True to see errors from B too
+            ),
+            # Add more groups here if needed
+            return_exceptions=True # Gather itself should also return exceptions from wrappers if they fail catastrophically
+        )
+        log.info("All wrapper calls finished.")
+
+        # Process results from each wrapper call
+        for i, group_result_or_exc in enumerate(wrapper_results):
+            group_name = f"Group {'A' if i == 0 else 'B'}" # Adjust if more groups
+            if isinstance(group_result_or_exc, Exception):
+                log.error(f"{group_name} wrapper itself failed: {group_result_or_exc}")
+            else:
+                # Process the list returned by the wrapper
+                log.info(f"Results for {group_name}:")
+                exceptions_in_group = []
+                for item in group_result_or_exc: # This is the list from run_coroutines_with_progress
+                    if isinstance(item, Exception):
+                         exceptions_in_group.append(item)
+                         log.warning(f"  - Task Error: {item}")
+                    # else:
+                    #     log.info(f"  - Success: {item}")
+                if exceptions_in_group:
+                    log.warning(f"  ({len(exceptions_in_group)} errors detected in group)")
+                else:
+                    log.info(f"  (All tasks succeeded in group)")
+
+    log.info("Main function finished.")
+
+
+# --- Run ---
+if __name__ == "__main__":
+    asyncio.run(main_simple_wrapper())
