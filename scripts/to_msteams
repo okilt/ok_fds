@@ -1,0 +1,206 @@
+import logging
+import subprocess
+import sys
+import os
+from datetime import datetime
+from apscheduler.schedulers.blocking import BlockingScheduler
+import requests # For Teams notifications
+import json     # For Teams notifications
+
+# --- Configuration ---
+PYTHON_EXECUTABLE = sys.executable
+BASE_SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
+
+# !!! IMPORTANT: Store your Webhook URL securely, e.g., as an environment variable !!!
+# Example: Set TEAMS_WEBHOOK_URL in your environment before running the script
+# export TEAMS_WEBHOOK_URL="your_teams_webhook_url_here" (Linux/macOS)
+# $Env:TEAMS_WEBHOOK_URL="your_teams_webhook_url_here" (PowerShell)
+TEAMS_WEBHOOK_URL = os.getenv("TEAMS_SCRIPT_FAILURE_WEBHOOK_URL")
+
+scheduler = BlockingScheduler(timezone="UTC")
+
+# --- Logging Setup (same as before) ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("scheduler.log"),
+        logging.StreamHandler()
+    ]
+)
+logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
+logging.getLogger('apscheduler.scheduler').setLevel(logging.WARNING)
+
+# --- Teams Notification Function ---
+def send_teams_notification(webhook_url, title, message, facts=None, color="FF0000"):
+    """
+    Sends a notification to an MS Teams channel using an Incoming Webhook.
+    Uses the "MessageCard" format.
+    """
+    if not webhook_url:
+        logging.warning("TEAMS_WEBHOOK_URL not configured. Skipping Teams notification.")
+        return
+
+    payload = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "themeColor": color, # Red for failure, Green for success (e.g., "00FF00")
+        "summary": title,
+        "sections": [{
+            "activityTitle": title,
+            "activitySubtitle": "Automated Script Notification",
+            "facts": facts if facts else [],
+            "markdown": True, # Allow markdown in the message text
+            "text": message
+        }]
+    }
+
+    try:
+        response = requests.post(webhook_url, data=json.dumps(payload), headers={'Content-Type': 'application/json'}, timeout=10)
+        response.raise_for_status()  # Raise an exception for HTTP error codes (4xx or 5xx)
+        logging.info(f"Successfully sent Teams notification for: {title}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to send Teams notification for '{title}': {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error sending Teams notification for '{title}': {e}")
+
+
+# --- Custom Failure Handling Logic ---
+def handle_script_failure_with_teams(script_name, script_path, return_code, stdout, stderr, exception_obj=None):
+    """
+    Handles script failure and sends a Teams notification.
+    """
+    log_message = f"!!! SCRIPT FAILURE: {script_name} !!! Path: {script_path}, RC: {return_code}"
+    logging.error(log_message)
+    if stdout: logging.error(f"  Stdout:\n{stdout.strip()}")
+    if stderr: logging.error(f"  Stderr:\n{stderr.strip()}")
+    if exception_obj: logging.error(f"  Scheduler Exception: {exception_obj}")
+
+    # Prepare details for Teams message
+    teams_title = f"🚨 Script Failure: {script_name}"
+    teams_message = (
+        f"The script **{script_name}** has failed.\n\n"
+        f"Please investigate."
+    )
+    teams_facts = [
+        {"name": "Script Path", "value": script_path},
+        {"name": "Return Code", "value": str(return_code)},
+    ]
+    # Truncate stdout/stderr for Teams message to avoid overly long messages
+    if stdout:
+        teams_facts.append({"name": "Stdout (first 200 chars)", "value": stdout.strip()[:200] + ("..." if len(stdout.strip()) > 200 else "")})
+    if stderr:
+        teams_facts.append({"name": "Stderr (first 200 chars)", "value": stderr.strip()[:200] + ("..." if len(stderr.strip()) > 200 else "")})
+    if exception_obj:
+        teams_facts.append({"name": "Scheduler Exception", "value": str(exception_obj)[:200]})
+
+    send_teams_notification(TEAMS_WEBHOOK_URL, teams_title, teams_message, teams_facts, color="FF0000") # Red color for failure
+
+# --- Core Script Execution Function (modified to use the new failure handler by default) ---
+def run_python_script(script_name, script_args=None, on_failure_callback=handle_script_failure_with_teams):
+    script_path = os.path.join(BASE_SCRIPT_PATH, script_name)
+    command = [PYTHON_EXECUTABLE, script_path]
+    if script_args:
+        command.extend(script_args)
+
+    logging.info(f"Executing script: {' '.join(command)}")
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=300)
+
+        if result.returncode == 0:
+            logging.info(f"Script '{script_name}' completed successfully.")
+            if result.stdout: logging.debug(f"Stdout from '{script_name}':\n{result.stdout.strip()}")
+            if result.stderr: logging.warning(f"Stderr from successful '{script_name}':\n{result.stderr.strip()}")
+            # Optionally, send a success notification to Teams
+            # send_teams_notification(TEAMS_WEBHOOK_URL, f"✅ Script Success: {script_name}", f"Script '{script_name}' ran successfully.", color="00FF00")
+        else:
+            on_failure_callback(
+                script_name=script_name, script_path=script_path,
+                return_code=result.returncode, stdout=result.stdout, stderr=result.stderr
+            )
+    except subprocess.TimeoutExpired as e:
+        logging.error(f"Script '{script_name}' timed out after {e.timeout} seconds.")
+        on_failure_callback(
+            script_name=script_name, script_path=script_path,
+            return_code=-1, stdout=e.stdout.decode(errors='ignore') if e.stdout else "",
+            stderr=e.stderr.decode(errors='ignore') if e.stderr else "TimeoutExpired", exception_obj=e
+        )
+    except FileNotFoundError:
+        logging.error(f"Script file not found: {script_path}.")
+        on_failure_callback(
+            script_name=script_name, script_path=script_path,
+            return_code=-2, stdout="", stderr=f"File not found: {script_path}", exception_obj=FileNotFoundError()
+        )
+    except Exception as e:
+        logging.error(f"An unexpected error occurred trying to run '{script_name}': {e}")
+        on_failure_callback(
+            script_name=script_name, script_path=script_path,
+            return_code=-3, stdout="", stderr=str(e), exception_obj=e
+        )
+
+
+# --- Script Definitions and Scheduling (same as before, but will use the new default failure handler) ---
+scheduled_scripts = [
+    {
+        "name": "Daily Report",
+        "file": "script1.py",
+        "trigger": "cron",
+        "trigger_args": {"hour": 2, "minute": 30},
+        "job_id": "daily_report_script1"
+    },
+    {
+        "name": "Data Processor with Args",
+        "file": "script2_with_args.py",
+        "trigger": "interval",
+        "trigger_args": {"minutes": 15},
+        "script_args": ["--mode", "incremental", "--source", "api"],
+        "job_id": "data_processor_script2"
+    },
+    {
+        "name": "Failing Test Script",
+        "file": "failing_script.py", # This script should exit with a non-zero code
+        "trigger": "interval",
+        "trigger_args": {"minutes": 1}, # Test frequently
+        "job_id": "failing_test_script3",
+        "max_instances": 1
+    },
+]
+
+def register_jobs():
+    logging.info("Registering scheduled jobs...")
+    for script_def in scheduled_scripts:
+        try:
+            scheduler.add_job(
+                run_python_script,
+                trigger=script_def["trigger"],
+                kwargs={
+                    "script_name": script_def["file"],
+                    "script_args": script_def.get("script_args"),
+                    # "on_failure_callback": specific_handler_if_needed # Overrides default
+                },
+                id=script_def["job_id"],
+                name=script_def["name"],
+                replace_existing=True,
+                max_instances=script_def.get("max_instances", 1),
+                misfire_grace_time=script_def.get("misfire_grace_time", 60),
+                **script_def["trigger_args"]
+            )
+            logging.info(f"  + Scheduled '{script_def['name']}' (ID: {script_def['job_id']})")
+        except Exception as e:
+            logging.error(f"Failed to schedule job '{script_def['name']}': {e}")
+    logging.info("Job registration complete.")
+
+if __name__ == '__main__':
+    if not TEAMS_WEBHOOK_URL:
+        logging.warning("TEAMS_SCRIPT_FAILURE_WEBHOOK_URL environment variable is not set. Teams notifications for failures will be skipped.")
+
+    register_jobs()
+    logging.info("Starting scheduler... Press Ctrl+C to exit.")
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Scheduler stopped by user.")
+    finally:
+        if scheduler.running:
+            scheduler.shutdown()
+        logging.info("Scheduler shutdown complete.")
