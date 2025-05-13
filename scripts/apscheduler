@@ -1,0 +1,211 @@
+import logging
+import subprocess
+import sys
+import os
+from datetime import datetime
+from apscheduler.schedulers.blocking import BlockingScheduler
+# from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore # Optional: for persistent jobs
+
+# --- Configuration ---
+# Best practice: move sensitive or environment-specific configs to .env or config files
+PYTHON_EXECUTABLE = sys.executable  # Assumes scripts use the same Python env as scheduler
+                                    # OR specify: "/path/to/project_venv/bin/python"
+BASE_SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
+
+# Optional: Persistent Job Store (e.g., if scheduler restarts, jobs are remembered)
+# DB_URL = 'sqlite:///jobs.sqlite' # Simple SQLite database
+# jobstores = {
+#     'default': SQLAlchemyJobStore(url=DB_URL)
+# }
+# scheduler = BlockingScheduler(jobstores=jobstores, timezone="UTC") # Example timezone
+scheduler = BlockingScheduler(timezone="UTC") # Simpler, non-persistent for now
+
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("scheduler.log"),
+        logging.StreamHandler() # Also print to console
+    ]
+)
+# Silence APScheduler's own INFO logs if they are too verbose for you
+logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
+logging.getLogger('apscheduler.scheduler').setLevel(logging.WARNING)
+
+# --- Custom Failure Handling Logic ---
+def handle_generic_script_failure(script_name, script_path, return_code, stdout, stderr, exception_obj=None):
+    """
+    This function is called when a script fails.
+    Customize this to your needs (e.g., send email, Slack notification, etc.)
+    """
+    logging.error(f"!!! SCRIPT FAILURE DETECTED FOR: {script_name} !!!")
+    logging.error(f"  Path: {script_path}")
+    logging.error(f"  Return Code: {return_code}")
+    if stdout:
+        logging.error(f"  Stdout:\n{stdout.strip()}")
+    if stderr:
+        logging.error(f"  Stderr:\n{stderr.strip()}")
+    if exception_obj:
+        logging.error(f"  Scheduler Exception: {exception_obj}")
+
+    # Example: Send an email (you'd need to implement send_email_alert)
+    # subject = f"ALERT: Python script '{script_name}' failed!"
+    # body = f"""
+    # The script '{script_name}' at {script_path} failed execution.
+    # Return Code: {return_code}
+    # Stdout:
+    # {stdout}
+    # Stderr:
+    # {stderr}
+    # """
+    # send_email_alert(subject, body, "admin@example.com")
+
+    # Example: Log to a specific error database or ticketing system
+    # log_failure_to_system(script_name, return_code, stderr)
+
+def handle_critical_script_failure(script_name, script_path, return_code, stdout, stderr, exception_obj=None):
+    """A different handler for critical scripts."""
+    handle_generic_script_failure(script_name, script_path, return_code, stdout, stderr, exception_obj)
+    logging.critical(f"CRITICAL FAILURE for {script_name}. Escalating immediately!")
+    # Add more specific actions for critical failures here, e.g., page an on-call person
+
+
+# --- Core Script Execution Function ---
+def run_python_script(script_name, script_args=None, on_failure_callback=handle_generic_script_failure):
+    """
+    Runs a Python script using subprocess and calls on_failure_callback if it fails.
+    """
+    script_path = os.path.join(BASE_SCRIPT_PATH, script_name)
+    command = [PYTHON_EXECUTABLE, script_path]
+    if script_args:
+        command.extend(script_args)
+
+    logging.info(f"Executing script: {' '.join(command)}")
+    try:
+        # Set cwd if your scripts expect to be run from their own directory
+        # script_dir = os.path.dirname(script_path)
+        # result = subprocess.run(command, capture_output=True, text=True, check=False, cwd=script_dir)
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=300) # 5 min timeout
+
+        if result.returncode == 0:
+            logging.info(f"Script '{script_name}' completed successfully.")
+            if result.stdout:
+                logging.debug(f"Stdout from '{script_name}':\n{result.stdout.strip()}")
+            if result.stderr: # Some scripts might output warnings to stderr even on success
+                logging.warning(f"Stderr from successful '{script_name}':\n{result.stderr.strip()}")
+        else:
+            # Script failed (non-zero exit code)
+            on_failure_callback(
+                script_name=script_name,
+                script_path=script_path,
+                return_code=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr
+            )
+    except subprocess.TimeoutExpired as e:
+        logging.error(f"Script '{script_name}' timed out after {e.timeout} seconds.")
+        on_failure_callback(
+            script_name=script_name,
+            script_path=script_path,
+            return_code=-1, # Custom return code for timeout
+            stdout=e.stdout.decode(errors='ignore') if e.stdout else "",
+            stderr=e.stderr.decode(errors='ignore') if e.stderr else "TimeoutExpired",
+            exception_obj=e
+        )
+    except FileNotFoundError:
+        logging.error(f"Script file not found: {script_path}. Check BASE_SCRIPT_PATH and script_name.")
+        # You might want a specific callback or notification for this too
+    except Exception as e:
+        logging.error(f"An unexpected error occurred trying to run '{script_name}': {e}")
+        # Generic callback for unexpected errors during subprocess launch or handling
+        on_failure_callback(
+            script_name=script_name,
+            script_path=script_path,
+            return_code=-2, # Custom return code for scheduler error
+            stdout="",
+            stderr=str(e),
+            exception_obj=e
+        )
+
+# --- Script Definitions and Scheduling ---
+# List of scripts to schedule. Each dict defines a job.
+# 'name': A friendly name for the script (used in logging and potentially job_id)
+# 'file': The filename of the Python script in the 'scripts/' directory.
+# 'trigger': APScheduler trigger type ('cron', 'interval', 'date').
+# 'trigger_args': Dictionary of arguments for the trigger.
+# 'script_args': Optional list of command-line arguments for the Python script.
+# 'on_failure': Optional specific callback function if this script fails. Defaults to generic.
+# 'job_id': Unique ID for the job. Good for managing (pausing, resuming, removing) jobs.
+# 'max_instances': How many instances of this job can run concurrently.
+# 'misfire_grace_time': Seconds after the designated run time that the job is still allowed to run.
+
+scheduled_scripts = [
+    {
+        "name": "Daily Report",
+        "file": "script1.py",
+        "trigger": "cron",
+        "trigger_args": {"hour": 2, "minute": 30}, # Runs daily at 2:30 AM
+        "job_id": "daily_report_script1"
+    },
+    {
+        "name": "Data Processor with Args",
+        "file": "script2_with_args.py",
+        "trigger": "interval",
+        "trigger_args": {"minutes": 15}, # Runs every 15 minutes
+        "script_args": ["--mode", "incremental", "--source", "api"],
+        "job_id": "data_processor_script2"
+    },
+    {
+        "name": "Failing Test Script",
+        "file": "failing_script.py",
+        "trigger": "interval",
+        "trigger_args": {"minutes": 1}, # Runs every 1 minute (for testing failure)
+        "on_failure": handle_critical_script_failure, # Use a specific handler
+        "job_id": "failing_test_script3",
+        "max_instances": 1
+    },
+    # {
+    #     "name": "One-Time Task",
+    #     "file": "onetime_script.py",
+    #     "trigger": "date",
+    #     "trigger_args": {"run_date": datetime(2024, 12, 25, 10, 0, 0)}, # Specific date and time
+    #     "job_id": "one_time_festive_task"
+    # },
+]
+
+def register_jobs():
+    logging.info("Registering scheduled jobs...")
+    for script_def in scheduled_scripts:
+        try:
+            scheduler.add_job(
+                run_python_script,
+                trigger=script_def["trigger"],
+                kwargs={ # Pass arguments to run_python_script using kwargs
+                    "script_name": script_def["file"],
+                    "script_args": script_def.get("script_args"),
+                    "on_failure_callback": script_def.get("on_failure", handle_generic_script_failure)
+                },
+                id=script_def["job_id"],
+                name=script_def["name"],
+                replace_existing=True, # Useful during development
+                max_instances=script_def.get("max_instances", 1),
+                misfire_grace_time=script_def.get("misfire_grace_time", 60), # e.g., 1 minute
+                **script_def["trigger_args"] # Unpack trigger-specific args (hour, minute, etc.)
+            )
+            logging.info(f"  + Scheduled '{script_def['name']}' (ID: {script_def['job_id']})")
+        except Exception as e:
+            logging.error(f"Failed to schedule job '{script_def['name']}': {e}")
+    logging.info("Job registration complete.")
+
+if __name__ == '__main__':
+    register_jobs()
+    logging.info("Starting scheduler... Press Ctrl+C to exit.")
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Scheduler stopped by user.")
+    finally:
+        if scheduler.running:
+            scheduler.shutdown()
+        logging.info("Scheduler shutdown complete.")
